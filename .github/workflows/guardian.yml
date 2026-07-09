@@ -1,0 +1,57 @@
+name: Evaluation Guardian
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  protect-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 is required to fetch the entire git history.
+          # Otherwise, git diff will fail because it cannot find origin/main.
+          fetch-depth: 0
+
+      - name: Check for Unauthorized Test Modifications
+        run: |
+          # 1. Fetch origin/main so we have a reference to compare against
+          git fetch origin main:origin/main
+
+          # 2. Get a list of all files changed in this PR compared to origin/main
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD)
+          echo "=== Proposed File Changes ==="
+          echo "$CHANGED_FILES"
+          echo "============================="
+
+          # 3. Check if the agent modified any grading files in the tests/ directory
+          CHANGED_TESTS=$(echo "$CHANGED_FILES" | grep "^tests/" || true)
+          if [ -n "$CHANGED_TESTS" ]; then
+            echo "❌ CRITICAL ERROR: This PR modifies files inside the 'tests/' directory."
+            echo "Unauthorized test modifications detected:"
+            echo "$CHANGED_TESTS"
+            echo "To prevent reward-hacking, agents are strictly prohibited from editing tests."
+            exit 1
+          fi
+
+          # 4. Check if the agent tried to modify the guardian workflow itself to bypass checks
+          CHANGED_WORKFLOWS=$(echo "$CHANGED_FILES" | grep "^\.github/workflows/" || true)
+          if [ -n "$CHANGED_WORKFLOWS" ]; then
+            echo "❌ CRITICAL ERROR: This PR modifies workflow configuration files."
+            echo "Agents are not allowed to change the GitHub Actions parameters."
+            exit 1
+          fi
+
+          echo "✅ No unauthorized modifications detected in 'tests/' or '.github/workflows/'."
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Run Evaluation Tests
+        run: |
+          # Execute the un-hacked tests against the agent's new code
+          python3 -m unittest discover -s tests
