@@ -11,7 +11,7 @@ This file defines the repository-wide agentic loop configuration and safety gate
 
 ## 2. Execution Runbook (The Verification & CI Merge Cycle)
 
-Before a pull request can be merged, the agent must check out the target branch and execute its benchmark-specific validation tests [CODEREVIEW.md]. This execution runs inside a secure, isolated sandbox environment to prevent untrusted execution side effects [GEMINI_SYSTEM_PROMPT.md.txt].
+Before a pull request can be merged, the agent must check out the target branch and execute its benchmark-specific validation tests [CODEREVIEW.md]. This execution runs inside a secure, isolated sandbox environment to prevent untrusted execution side effects.
 
 ### Step-by-Step Execution Sequence
 
@@ -19,8 +19,8 @@ Before a pull request can be merged, the agent must check out the target branch 
    * Query the GitHub Pull Requests API (`/repos/{owner}/{repo}/pulls?state=open`) and isolate open PRs originating from agent branches (`ocr-tasks-*`) [2.1].
 
 2. **Secure Sandbox Provisioning:**
-   * Invoke the **`gemini-interactions-api`** / **`gemini_interactions_api`** skill to spin up a managed remote Linux container (`environment: "remote"`) [GEMINI_SYSTEM_PROMPT.md.txt].
-   * Declaratively mount the repository and checkout the specific pull request branch [GEMINI_SYSTEM_PROMPT.md.txt].
+   * Invoke the **`gemini-interactions-api`** / **`gemini_interactions_api`** skill to spin up a managed remote Linux container (`environment: "remote"`).
+   * Declaratively mount the repository and checkout the specific pull request branch.
 
 3. **Benchmark Path Resolution:**
    * Analyze the modified files in the pull request to identify the target benchmark context (e.g., `market-making/`, `selinux/`, etc.) [CODEREVIEW.md].
@@ -32,7 +32,7 @@ Before a pull request can be merged, the agent must check out the target branch 
      ```bash
      python3 -m unittest discover -s tests
      ```
-   * Retrieve the complete step logs and exit status via the `interaction.steps` API history to verify whether all assertions passed with `exit code 0` [GEMINI_SYSTEM_PROMPT.md.txt].
+   * Retrieve the complete step logs and exit status via the `interaction.steps` API history to verify whether all assertions passed with `exit code 0`.
 
 5. **Code Review Generation (GLM 5.2):**
    * Execute the `ocr review` auditing cycle inside the sandbox comparing the base and head branch [1.2.3, GEMINI_SYSTEM_PROMPT.md.txt].
