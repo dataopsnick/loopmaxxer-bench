@@ -35,7 +35,7 @@ Before a pull request can be merged, the agent must check out the target branch 
    * Retrieve the complete step logs and exit status via the `interaction.steps` API history to verify whether all assertions passed with `exit code 0`.
 
 5. **Code Review Generation (GLM 5.2):**
-   * Execute the `ocr review` auditing cycle inside the sandbox comparing the base and head branch [1.2.3, GEMINI_SYSTEM_PROMPT.md.txt].
+   * Execute the `ocr review` auditing cycle inside the sandbox comparing the base and head branch.
    * Generate the `CODEREVIEW.md` diagnostics report [CODEREVIEW.md].
 
 6. **Pull Request Submission & Merge Gate:**
@@ -46,12 +46,12 @@ Before a pull request can be merged, the agent must check out the target branch 
 
 ## 3. Verifier (The Merge Gatekeeper)
 * **Validator:** `tests/` directories matching the active benchmark, `verify_xml.py` structure validation [CODEREVIEW.md].
-* **Rule:** If any assertion fails inside the `gemini-interactions-api` execution snapshot or if a benchmark-specific test file is missing, the verifier fails the execution loop [GEMINI_SYSTEM_PROMPT.md.txt]. Merging via `ci_reviewer.py` is blocked [CODEREVIEW.md].
+* **Rule:** If any assertion fails inside the `gemini-interactions-api` execution snapshot or if a benchmark-specific test file is missing, the verifier fails the execution loop. Merging via `ci_reviewer.py` is blocked [CODEREVIEW.md].
 
 ---
 
 ## 4. Stop Rules
-* **Budget Limits:** Max 300,000 tokens per interaction loop [GEMINI_SYSTEM_PROMPT.md.txt].
+* **Budget Limits:** Max 300,000 tokens per interaction loop.
 * **Execution Limit:** Max 5 consecutive CLI scan operations [CODEREVIEW.md].
 * **Circuit Breaker:** Halt operations immediately on any test failures, API rate limits (HTTP 429), or missing setup configurations [CODEREVIEW.md].
 
@@ -59,11 +59,11 @@ Before a pull request can be merged, the agent must check out the target branch 
 
 ## 5. Memory
 * **State Management:** Track active processes using `setup_state.json` and `TASKLIST.md` [CODEREVIEW.md].
-* **Sandbox Tracking:** Persist and re-use the sandbox `environment_id` returned by the Interactions API across consecutive validation turns to preserve the state of checked-out repositories [GEMINI_SYSTEM_PROMPT.md.txt].
+* **Sandbox Tracking:** Persist and re-use the sandbox `environment_id` returned by the Interactions API across consecutive validation turns to preserve the state of checked-out repositories .
 
 ---
 
 ## 6. Configured Skills
 * **`loop-engineer`**: Coordinates trigger states and the verification lifecycles.
 * **`pr-fix-verifier`**: Standardizes the pattern of writing deterministic, non-destructive test assertions inside the `tests/` subfolder.
-* **`gemini-interactions-api`**: Manages isolated remote Linux container instances to securely compile code and run tests without polluting the primary runtime environment [GEMINI_SYSTEM_PROMPT.md.txt].
+* **`gemini-interactions-api`**: Manages isolated remote Linux container instances to securely compile code and run tests without polluting the primary runtime environment.
