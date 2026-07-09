@@ -1,0 +1,68 @@
+# Antigravity Agent Reference (JavaScript/TypeScript)
+
+The Antigravity agent (`antigravity-preview-05-2026`) is a general-purpose managed agent on the Gemini API. A single API call gives you an agent that reasons, executes code, manages files, and browses the web inside your own secure Linux sandbox, hosted by Google.
+
+## Run your first agent interaction
+
+By default, the agent has access to `code_execution`, `google_search`, and `url_context`.
+
+```javascript
+import { GoogleGenAI } from "@google/genai";
+
+const ai = new GoogleGenAI({});
+
+const interaction = await ai.interactions.create({
+    agent: "antigravity-preview-05-2026",
+    input: "Read Hacker News, summarize the top 10 stories, and save the results as a PDF.",
+    environment: "remote",
+}, { timeout: 300000 });
+
+console.log(interaction.output_text);
+```
+
+## Restricting Tools
+
+To limit the agent to specific tools, pass only the ones you need in the `tools` parameter:
+
+```javascript
+import { GoogleGenAI } from "@google/genai";
+
+const ai = new GoogleGenAI({});
+
+const interaction = await ai.interactions.create({
+    agent: "antigravity-preview-05-2026",
+    input: "Search for the latest AI research papers on reasoning and summarize them.",
+    environment: "remote",
+    tools: [
+        { type: "google_search" },
+        { type: "url_context" },
+    ],
+}, { timeout: 300000 });
+
+console.log(interaction.output_text);
+```
+
+## Multimodal Input
+
+The Antigravity agent supports multimodal inputs (text and image). Images must be supplied as inline base64-encoded strings (`data`).
+
+```javascript
+import { GoogleGenAI } from "@google/genai";
+import * as fs from "node:fs";
+
+const ai = new GoogleGenAI({});
+const base64Image = fs.readFileSync("path/to/chart.png", { encoding: "base64" });
+
+const interactionInline = await ai.interactions.create({
+    agent: "antigravity-preview-05-2026",
+    input: [
+        { type: "text", text: "Analyze this chart and summarize the trends." },
+        {
+            type: "image",
+            data: base64Image,
+            mime_type: "image/png",
+        },
+    ],
+    environment: "remote",
+}, { timeout: 300000 });
+```
