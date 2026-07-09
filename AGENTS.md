@@ -19,7 +19,7 @@ Before a pull request can be merged, the agent must check out the target branch 
    * Query the GitHub Pull Requests API (`/repos/{owner}/{repo}/pulls?state=open`) and isolate open PRs originating from agent branches (`ocr-tasks-*`) [2.1].
 
 2. **Secure Sandbox Provisioning:**
-   * Invoke the **`gemini-interactions-api`** / **`gemini_interactions_api`** skill to spin up a managed remote Linux container (`environment: "remote"`).
+   * Invoke the **`gemini-interactions-api`** / **`gemini-interactions-api`** skill to spin up a managed remote Linux container (`environment: "remote"`).
    * Declaratively mount the repository and checkout the specific pull request branch.
 
 3. **Benchmark Path Resolution:**
