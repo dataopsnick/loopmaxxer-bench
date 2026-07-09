@@ -6,7 +6,7 @@ description: Instructions for the Gemini Interactions API components, covering A
 
 skills/
 └── system_skills/
-    ├── gemini_interactions_api/
+    ├── gemini-interactions-api/
     │   ├── SKILL.md
     │   └── references/
     │       ├── agent-environment.md
