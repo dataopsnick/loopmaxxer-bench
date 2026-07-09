@@ -1,0 +1,58 @@
+name: Autonomous Agent CI Reviewer Gate
+
+on:
+  # Trigger on PR actions targeting main
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+  # Trigger on a schedule or manually via the GitHub UI
+  workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *' # Optional: runs every 30 minutes to catch pending tasks
+
+jobs:
+  run-ci-reviewer:
+    runs-on: ubuntu-latest
+    
+    # Required permissions to allow Actions to comment, approve, and merge PRs
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetches all history and branches to allow checking out PR branches
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install httpx
+
+      - name: Configure Git Author
+        run: |
+          git config --global user.name "OCR Space Bot"
+          git config --global user.email "bot@opencodereview.local"
+
+      - name: Execute CI Reviewer Loop
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          BASE_BRANCH: "main"
+        run: |
+          # Ensure ci_reviewer.py is present at the root of the repository
+          if [ -f "./ci_reviewer.py" ]; then
+            python ci_reviewer.py
+          else
+            echo "Error: ci_reviewer.py was not found at the repository root."
+            exit 1
+          fi
