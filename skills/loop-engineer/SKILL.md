@@ -17,6 +17,14 @@ When creating or configuring an agentic loop, always define and map these six el
 5. **Memory:** State persistence on disk (e.g., updating a `progress.md` or `STATE.md` file after every turn) so context survives between restarts.
 6. **Skills:** Keep run-time code short by saving project-specific constraints in isolated `SKILL.md` files rather than stuffing them into the initial prompt.
 
+## Anti-Slop (Anti-Reward Hacking) Rules
+You are strictly forbidden from taking shortcuts to bypass compiler errors or make test suites pass. Your code diffs will be scanned for violations. 
+1. **Never suppress compiler/linter warnings** inline (do not use `# pylint: disable`, `# type: ignore`, `eslint-disable`, `@ts-ignore`, or `#[allow]`). Fix the underlying code quality or type signature instead.
+2. **Never disable tests** (do not use `@unittest.skip`, `@pytest.mark.skip`, `#[ignore]`, or `it.skip`). If a test fails, diagnose and fix the implementation.
+3. **Never swallow exceptions silently** (do not write empty `except: pass` or `catch {}` blocks). Every exception handler must either contain logic to recover, log the error, or propagate the failure.
+4. **Never use arbitrary sleeps to resolve timing issues** (do not use `time.sleep` or `asyncio.sleep` in tests). Use deterministic coordination primitives (e.g., event listeners, mocks, or TaskCompletionSources).
+
+## Flow
 ```text
 TRIGGER: Schedule / CI / Hook   →   DOER: Independent execution
 CHECKER: Evaluator model/tests   →   STOP: Hard limits (Iters, Budget)
