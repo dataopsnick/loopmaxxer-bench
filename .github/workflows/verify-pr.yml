@@ -1,0 +1,20 @@
+name: Guarded Agent Verification
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+
+      # Overwrite the tests folder with the read-only ground truth from main
+      - name: Overwrite Agent-Modified Tests
+        run: |
+          git fetch origin main:main
+          git checkout origin/main -- tests/
+          
+      - name: Run Unit Tests
+        run: python3 -m unittest discover -s tests
