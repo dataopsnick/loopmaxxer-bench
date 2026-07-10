@@ -63,6 +63,26 @@ def log_traffic(message: str):
 
 def load_state():
     """Load or initialize the configuration setup state"""
+    bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
+    if bootstrap_env:
+        try:
+            init_data = json.loads(bootstrap_env)
+            return {
+                "step": "completed",
+                "api_key": "configured",
+                "github_token": init_data.get("github_token", "none"),
+                "whitelist": init_data.get("whitelist", ["novita", "google-ai-studio", "google-vertex"]),
+                "preferred_model": init_data.get("preferred_model", "deepseek/deepseek-v4-pro"),
+                "alternative_model": init_data.get("alternative_model", "None"),
+                "zdr": init_data.get("zdr", False),
+                "data_collection": init_data.get("data_collection", "allow"),
+                "allow_fallbacks": init_data.get("allow_fallbacks", True),
+                "require_parameters": init_data.get("require_parameters", False),
+                "policy_name": "Environment Auto-Bootstrapped"
+            }
+        except Exception as e:
+            print(f"⚠️ [System] In-memory bootstrap parse failed: {e}")
+
     if not os.path.exists(STATE_FILE):
         config_path = os.path.expanduser("~/.opencodereview/config.json")
         has_token = False
@@ -102,6 +122,26 @@ def load_state():
     
 def load_default_state():
     """Load or initialize the configuration setup state using centralized defaults"""
+    bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
+    if bootstrap_env:
+        try:
+            init_data = json.loads(bootstrap_env)
+            return {
+                "step": "completed",
+                "api_key": "configured",
+                "github_token": init_data.get("github_token", "none"),
+                "whitelist": init_data.get("whitelist", ["novita", "google-ai-studio", "google-vertex"]),
+                "preferred_model": init_data.get("preferred_model", "deepseek/deepseek-v4-pro"),
+                "alternative_model": init_data.get("alternative_model", "None"),
+                "zdr": init_data.get("zdr", False),
+                "data_collection": init_data.get("data_collection", "allow"),
+                "allow_fallbacks": init_data.get("allow_fallbacks", True),
+                "require_parameters": init_data.get("require_parameters", False),
+                "policy_name": "Environment Auto-Bootstrapped"
+            }
+        except Exception as e:
+            print(f"⚠️ [System] In-memory bootstrap parse failed: {e}")
+
     if not os.path.exists(STATE_FILE):
         config_path = os.path.expanduser("~/.opencodereview/config.json")
         has_token = False
