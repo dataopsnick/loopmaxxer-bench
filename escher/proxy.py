@@ -252,6 +252,59 @@ This file defines our safe self-prompting loop under the **Loop Engineering 101*
         f.write(agents_content)
     return agents_content
 
+def bootstrap_system():
+    """Bootstraps the system state and OpenRouter config using environment JSON if present."""
+    bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
+    if not bootstrap_env:
+        return
+
+    try:
+        init_data = json.loads(bootstrap_env)
+        
+        # Extract parameters from JSON payload
+        api_key = init_data.get("api_key")
+        github_token = init_data.get("github_token", "none")
+        whitelist = init_data.get("whitelist", ["novita", "google-ai-studio", "google-vertex"])
+        preferred_model = init_data.get("preferred_model", "deepseek/deepseek-v4-pro")
+        alternative_model = init_data.get("alternative_model", "None")
+        
+        # Extract policies
+        zdr = init_data.get("zdr", False)
+        data_collection = init_data.get("data_collection", "allow")
+        allow_fallbacks = init_data.get("allow_fallbacks", True)
+        require_parameters = init_data.get("require_parameters", False)
+        
+        # 1. Update setup_state.json directly
+        state = {
+            "step": "completed",
+            "api_key": "configured",
+            "github_token": github_token,
+            "whitelist": whitelist,
+            "preferred_model": preferred_model,
+            "alternative_model": alternative_model,
+            "zdr": zdr,
+            "data_collection": data_collection,
+            "allow_fallbacks": allow_fallbacks,
+            "require_parameters": require_parameters,
+            "policy_name": "Environment Auto-Bootstrapped"
+        }
+        save_state(state)
+        
+        # 2. Safely write configurations to ~/.opencodereview/config.json
+        update_ocr_config(auth_token=api_key, model=preferred_model)
+        
+        # 3. Handle local/global Git rewrites if a token is present
+        if github_token and github_token != "none":
+            subprocess.run(["git", "config", "--global", "--unset-all", "url.https://*.insteadOf"], stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "--global", f"url.https://{github_token}@github.com/.insteadOf", "https://github.com/"], check=True)
+        
+        # 4. Generate starting files on disk
+        generate_goal_md(state)
+        generate_agents_md(state)
+        print("🤖 [System] Auto-bootstrapped successfully via environment configuration.")
+    except Exception as e:
+        print(f"⚠️ [System] Auto-bootstrap failed: {e}")
+
 # --- NATIVE AST PARSER & TREE WALKER FOR CODE INGESTION ---
 
 def walk_ast_for_python_file(filepath):
@@ -2366,3 +2419,7 @@ async def github_webhook(
                 return {"status": "ignored", "details": "Branch pattern did not match 'ocr-tasks-*'"}
                 
     return {"status": "ignored", "details": f"Event type '{x_github_event}' not configured for execution."}
+
+@app.on_event("startup")
+async def startup_event():
+    bootstrap_system()
