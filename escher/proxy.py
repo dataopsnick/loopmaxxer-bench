@@ -61,8 +61,59 @@ def log_traffic(message: str):
     except Exception as e:
         print(f"Failed to write traffic log: {e}")
 
+def load_state_from_env() -> dict or None:
+    """Extracts bootstrap state directly from environment variables, bypassing disk-read races."""
+    #api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("API_KEY")
+    #github_token = os.getenv("GITHUB_TOKEN", "none")
+    #preferred_model = os.getenv("PREFERRED_MODEL", "deepseek/deepseek-v4-pro")
+    #alternative_model = os.getenv("ALTERNATIVE_MODEL", "None")
+    #zdr = os.getenv("ZDR", "false").lower() == "true"
+    #data_collection = os.getenv("DATA_COLLECTION", "allow")
+    #allow_fallbacks = os.getenv("ALLOW_FALLBACKS", "true").lower() == "true"
+    #require_parameters = os.getenv("REQUIRE_PARAMETERS", "false").lower() == "true"
+    whitelist = ["novita", "google-ai-studio", "google-vertex"]
+
+    bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
+    if bootstrap_env:
+        try:
+            init_data = json.loads(bootstrap_env)
+            api_key = init_data.get("api_key")
+            github_token = init_data.get("github_token", "none")
+            whitelist = init_data.get("whitelist", whitelist)
+            preferred_model = init_data.get("preferred_model", preferred_model)
+            alternative_model = init_data.get("alternative_model", alternative_model)
+            zdr = init_data.get("zdr", zdr)
+            data_collection = init_data.get("data_collection", data_collection)
+            allow_fallbacks = init_data.get("allow_fallbacks", allow_fallbacks)
+            require_parameters = init_data.get("require_parameters", require_parameters)
+        except:
+            pass
+    if api_key:
+        return {
+            "step": "completed",
+            "api_key": "configured",
+            "github_token": github_token,
+            "whitelist": whitelist,
+            "preferred_model": preferred_model,
+            "alternative_model": alternative_model,
+            "zdr": zdr,
+            "data_collection": data_collection,
+            "allow_fallbacks": allow_fallbacks,
+            "require_parameters": require_parameters,
+            "policy_name": "Environment Auto-Bootstrapped"
+        }
+    return None
+
 def load_state():
     """Load or initialize the configuration setup state"""
+    env_state = load_state_from_env()
+    if env_state:
+        return env_state
+           
+    if not os.path.exists(STATE_FILE):
+           config_path = os.path.expanduser("~/.opencodereview/config.json")
+           has_token = False
+           
     bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
     if bootstrap_env:
         try:
@@ -121,6 +172,10 @@ def load_state():
         return {"step": "ask_api_key"}
     
 def load_default_state():
+    env_state = load_state_from_env()
+    if env_state:
+        return env_state
+
     """Load or initialize the configuration setup state using centralized defaults"""
     bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
     if bootstrap_env:
@@ -293,10 +348,21 @@ This file defines our safe self-prompting loop under the **Loop Engineering 101*
     return agents_content
 
 def bootstrap_system():
-    """Bootstraps the system state and OpenRouter config using environment JSON if present."""
-    bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
-    if not bootstrap_env:
+    """Bootstraps the system state using environment JSON if present."""
+    state = load_state_from_env()
+    if not state:
         return
+
+    try:
+        # Extract raw API key for config file parsing
+        api_key = None
+        bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
+        if bootstrap_env:
+            try:
+                init_data = json.loads(bootstrap_env)
+                api_key = init_data.get("api_key")
+            except:
+                pass
 
     try:
         init_data = json.loads(bootstrap_env)
@@ -331,7 +397,7 @@ def bootstrap_system():
         save_state(state)
         
         # 2. Safely write configurations to ~/.opencodereview/config.json
-        update_ocr_config(auth_token=api_key, model=preferred_model)
+        update_ocr_config(auth_token=api_key, model=state["preferred_model"])
         
         # 3. Handle local/global Git rewrites if a token is present
         if github_token and github_token != "none":
@@ -344,6 +410,7 @@ def bootstrap_system():
         print("🤖 [System] Auto-bootstrapped successfully via environment configuration.")
     except Exception as e:
         print(f"⚠️ [System] Auto-bootstrap failed: {e}")
+
 
 # --- NATIVE AST PARSER & TREE WALKER FOR CODE INGESTION ---
 
