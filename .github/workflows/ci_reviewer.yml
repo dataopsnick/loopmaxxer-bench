@@ -17,7 +17,7 @@ jobs:
     
     # Required permissions to allow Actions to comment, approve, and merge PRs
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
       issues: write
 
@@ -46,7 +46,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_OWNER: ${{ github.repository_owner }}
-          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_NAME: "${{ github.event.repository.name || github.repository }}"
           BASE_BRANCH: "main"
         run: |
           # Ensure ci_reviewer.py is present at the root of the repository

@@ -1,9 +1,15 @@
+import os
+import sys
 import re
 
-with open("CODEREVIEW.md", "r", encoding="utf-8") as f:
+filename = "CODEREVIEW.md"
+if not os.path.exists(filename):
+    print(f"Error: {filename} not found.")
+    sys.exit(1)
+
+with open(filename, "r", encoding="utf-8") as f:
     content = f.read()
 
-# Let's find all headers starting with ───
 matches = list(re.finditer(r'───\s*(.*?)\s*───', content))
 print(f"Found {len(matches)} headers:")
 for idx, match in enumerate(matches):

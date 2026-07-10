@@ -40,7 +40,7 @@ jobs:
       - name: Verify Python Code Syntax
         run: |
           echo "Compiling all Python files in the workspace..."
-          python3 -m py_compile $(find . -name "*.py" -not -path "*/.*" -not -path "*/node_modules/*" -not -path "*/venv/*" -not -path "*/dist/*" -not -path "*/build/*")
+          find . -name "*.py" -not -path "*/.*" -not -path "*/node_modules/*" -not -path "*/venv/*" -not -path "*/dist/*" -not -path "*/build/*" -exec python3 -m py_compile {} +
 
       # 5. Validate TASKLIST.md structure if both the file and verify_xml.py exist [ci_reviewer.py]
       - name: Verify TASKLIST.md Schema
