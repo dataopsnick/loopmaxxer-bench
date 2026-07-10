@@ -167,8 +167,10 @@ def load_state():
                 state["allow_fallbacks"] = True
             if "require_parameters" not in state:
                 state["require_parameters"] = False
+            state["step"] = "completed"
             return state
     except:
+        print(f"⚠️ [System] json.load(STATE_FILE) failed: {e}")
         return {"step": "ask_api_key"}
     
 def load_default_state():
