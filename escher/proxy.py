@@ -63,14 +63,14 @@ def log_traffic(message: str):
 
 def load_state_from_env() -> dict or None:
     """Extracts bootstrap state directly from environment variables, bypassing disk-read races."""
-    #api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("API_KEY")
-    #github_token = os.getenv("GITHUB_TOKEN", "none")
-    #preferred_model = os.getenv("PREFERRED_MODEL", "deepseek/deepseek-v4-pro")
-    #alternative_model = os.getenv("ALTERNATIVE_MODEL", "None")
-    #zdr = os.getenv("ZDR", "false").lower() == "true"
-    #data_collection = os.getenv("DATA_COLLECTION", "allow")
-    #allow_fallbacks = os.getenv("ALLOW_FALLBACKS", "true").lower() == "true"
-    #require_parameters = os.getenv("REQUIRE_PARAMETERS", "false").lower() == "true"
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    github_token = os.getenv("GITHUB_TOKEN", "none")
+    preferred_model = os.getenv("PREFERRED_MODEL", "deepseek/deepseek-v4-pro")
+    alternative_model = os.getenv("ALTERNATIVE_MODEL", "deepseek/deepseek-v4-flash")
+    zdr = os.getenv("ZDR", "false").lower() == "true"
+    data_collection = os.getenv("DATA_COLLECTION", "deny")
+    allow_fallbacks = os.getenv("ALLOW_FALLBACKS", "true").lower() == "true"
+    require_parameters = os.getenv("REQUIRE_PARAMETERS", "false").lower() == "true"
     whitelist = ["novita", "google-ai-studio", "google-vertex"]
 
     bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
@@ -126,7 +126,7 @@ def load_state():
                 "preferred_model": init_data.get("preferred_model", "deepseek/deepseek-v4-pro"),
                 "alternative_model": init_data.get("alternative_model", "None"),
                 "zdr": init_data.get("zdr", False),
-                "data_collection": init_data.get("data_collection", "allow"),
+                "data_collection": init_data.get("data_collection", "deny"),
                 "allow_fallbacks": init_data.get("allow_fallbacks", True),
                 "require_parameters": init_data.get("require_parameters", False),
                 "policy_name": "Environment Auto-Bootstrapped"
@@ -150,7 +150,7 @@ def load_state():
             "step": "completed",
             "whitelist": ["novita"],
             "zdr": False,
-            "data_collection": "allow",
+            "data_collection": "deny",
             "allow_fallbacks": True,
             "require_parameters": False
         }
@@ -162,7 +162,7 @@ def load_state():
             if "zdr" not in state:
                 state["zdr"] = False
             if "data_collection" not in state:
-                state["data_collection"] = "allow"
+                state["data_collection"] = "deny"
             if "allow_fallbacks" not in state:
                 state["allow_fallbacks"] = True
             if "require_parameters" not in state:
@@ -191,7 +191,7 @@ def load_default_state():
                 "preferred_model": init_data.get("preferred_model", "deepseek/deepseek-v4-pro"),
                 "alternative_model": init_data.get("alternative_model", "None"),
                 "zdr": init_data.get("zdr", False),
-                "data_collection": init_data.get("data_collection", "allow"),
+                "data_collection": init_data.get("data_collection", "deny"),
                 "allow_fallbacks": init_data.get("allow_fallbacks", True),
                 "require_parameters": init_data.get("require_parameters", False),
                 "policy_name": "Environment Auto-Bootstrapped"
@@ -381,7 +381,7 @@ def bootstrap_system():
         
         # Extract policies
         zdr = init_data.get("zdr", False)
-        data_collection = init_data.get("data_collection", "allow")
+        data_collection = init_data.get("data_collection", "deny")
         allow_fallbacks = init_data.get("allow_fallbacks", True)
         require_parameters = init_data.get("require_parameters", False)
         
@@ -623,7 +623,7 @@ async def call_openrouter_llm(system_prompt, user_prompt, state):
         return False
 
     payload["provider"] = {
-        "data_collection": state.get("data_collection", "allow"),
+        "data_collection": state.get("data_collection", "deny"),
         "zdr": to_bool(state.get("zdr", False)),
         "allow_fallbacks": to_bool(state.get("allow_fallbacks", True)),
         "only": state.get("whitelist", ["novita"]),
@@ -2189,7 +2189,7 @@ async def chat_completions(request: Request):
         
         # Enforce zero-data-retention parameters
         data["provider"] = {
-            "data_collection": state.get("data_collection", "allow"),
+            "data_collection": state.get("data_collection", "deny"),
             "zdr": to_bool(state.get("zdr", False)),
             "allow_fallbacks": to_bool(state.get("allow_fallbacks", True)),
             "only": whitelist,
