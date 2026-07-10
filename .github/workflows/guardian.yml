@@ -18,10 +18,10 @@ jobs:
       - name: Check for Unauthorized Test Modifications
         run: |
           # 1. Fetch origin/main so we have a reference to compare against
-          git fetch origin main:origin/main
+          git fetch origin ${{ github.event.pull_request.base.ref }}:origin/${{ github.event.pull_request.base.ref }}
 
           # 2. Get a list of all files changed in this PR compared to origin/main
-          CHANGED_FILES=$(git diff --name-only origin/main...HEAD)
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD)
           echo "=== Proposed File Changes ==="
           echo "$CHANGED_FILES"
           echo "============================="

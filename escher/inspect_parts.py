@@ -1,9 +1,13 @@
-# Let's inspect the entire file content around and after position 9435
-with open("CODEREVIEW.md", "r", encoding="utf-8") as f:
-    content = f.read()
+import os
 
-# Let's split content by "───" and see the parts
-parts = content.split("───")
+filename = "CODEREVIEW.md"
+if os.path.exists(filename):
+    with open(filename, "r", encoding="utf-8") as f:
+        content = f.read()
+else:
+    content = ""
+
+parts = content.split("───") if content else []
 print(f"Total parts: {len(parts)}")
 for i in range(1, len(parts)):
     lines = parts[i].strip().split("\n")

@@ -24,7 +24,8 @@ def clean_title(path_part, desc_part):
         short_title = bold_match.group(1).strip()
     else:
         # Fallback to first line up to 60 chars
-        short_title = first_line
+        fallback_line = re.sub(r'^(?:\s*[-*+]\s+|\s*\d+\.\s+|\s*#+\s+)', '', first_line)
+        short_title = fallback_line
         if len(short_title) > 60:
             short_title = short_title[:57] + "..."
     
@@ -44,8 +45,10 @@ def process_review_file(input_file="CODEREVIEW.md", output_file="TASKLIST.md"):
     except FileNotFoundError:
         return None, 0
 
-    # Split by the divider
-    parts = content.split("───")
+    # Split by the divider (supporting both custom box-drawing and standard Markdown thematic rules)
+    parts = [p.strip() for p in re.split(r'\r?\n(?:───+|---+|\*\*\*+|___+)\s*(?:\r?\n|$)', content)]
+    if parts and not parts[-1]:
+        parts.pop()
 
     tasks = []
     # Skip index 0 (preamble). Iterate over pairs following it.

@@ -69,7 +69,7 @@ async def scan_for_slop(branch_name: str, base_branch: str = "main") -> list:
     # 1. Fetch diff asynchronously using your existing run_cmd helper
     ret, diff, _ = await run_cmd(["git", "diff", "-U0", f"origin/{base_branch}...HEAD"])
     if ret != 0:
-        ret, diff, _ = await run_cmd(["git", "diff", "-U0", base_branch])
+        ret, diff, _ = await run_cmd(["git", "diff", "-U0", f"origin/{base_branch}"])
         if ret != 0:
             logging.warning("SlopGuard Warning: Could not generate git diff. Skipping anti-slop check.")
             return []
@@ -340,27 +340,28 @@ async def main():
             head_branch = pr["head"]["ref"]
             local_branch = f"pr-{pull_number}"
             
-            # 2. Local Checkout
-            checkout_success = await fetch_and_checkout_pr(pull_number, local_branch)
-            if not checkout_success:
-                continue
+            try:
+                # 2. Local Checkout
+                checkout_success = await fetch_and_checkout_pr(pull_number, local_branch)
+                if not checkout_success:
+                    continue
+                    
+                # 3. Compile and Run Automated Tests (enforcing the Gatekeeper rule)
+                tests_passed = await run_deterministic_gatekeeper_tests(head_branch) # await run_automated_tests(local_branch)
                 
-            # 3. Compile and Run Automated Tests (enforcing the Gatekeeper rule)
-            tests_passed = await run_deterministic_gatekeeper_tests(head_branch) # await run_automated_tests(local_branch)
-            
-            # 4. Invoke Open Code Review (routes to z-ai/glm-5.2)
-            review_text = await run_alibaba_ocr_review(local_branch)
-            
-            # 5. Post findings
-            review_submitted = await submit_github_review(client, pull_number, review_text, tests_passed)
-            
-            # 6. Merge if verified successfully
-            if tests_passed and review_submitted:
-                await merge_pull_request(client, pull_number)
+                # 4. Invoke Open Code Review (routes to z-ai/glm-5.2)
+                review_text = await run_alibaba_ocr_review(local_branch)
                 
-            # 7. Return back to base branch and clean up
-            await run_cmd(["git", "checkout", BASE_BRANCH])
-            await run_cmd(["git", "branch", "-D", local_branch])
+                # 5. Post findings
+                review_submitted = await submit_github_review(client, pull_number, review_text, tests_passed)
+                
+                # 6. Merge if verified successfully
+                if tests_passed and review_submitted:
+                    await merge_pull_request(client, pull_number)
+            finally:
+                # 7. Return back to base branch and clean up
+                await run_cmd(["git", "checkout", BASE_BRANCH])
+                await run_cmd(["git", "branch", "-D", local_branch])
 
 if __name__ == "__main__":
     asyncio.run(main())

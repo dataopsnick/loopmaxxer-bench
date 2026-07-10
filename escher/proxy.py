@@ -11,7 +11,7 @@ import httpx
 import hmac
 import hashlib
 from fastapi import FastAPI, Request, Response, Header, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from generate_tasklist import process_review_file
 
 app = FastAPI()
@@ -21,12 +21,43 @@ ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 STATE_FILE = "setup_state.json"
 TRAFFIC_LOG = "traffic.log"
 
+WORKSPACE_ROOT = os.path.abspath(os.getcwd())
+
+DEFAULT_STATE = {
+       "step": "completed",
+       "whitelist": ["novita","google-ai-studio","google-vertex"],
+       "zdr": False,
+       "data_collection": "allow",
+       "allow_fallbacks": True,
+       "require_parameters": False
+   }
+
+def get_secure_path(relative_target: str) -> str:
+    target_abs = os.path.abspath(os.path.join(WORKSPACE_ROOT, relative_target))
+    if not target_abs.startswith(WORKSPACE_ROOT):
+        raise PermissionError("Access Denied: Path traversal outside workspace boundary.")
+    return target_abs
+
+_state_lock = asyncio.Lock()
+_ci_execution_lock = asyncio.Lock()
+
 def log_traffic(message: str):
-    """Helper to append raw network traffic traces to disk"""
+    """Helper to append raw network traffic traces to disk with 0o600 permissions and secret redaction"""
     try:
-        with open(TRAFFIC_LOG, "a", encoding="utf-8") as f:
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"[{timestamp}] {message}\n")
+        # Scrub and redact sensitive authorization headers, API keys, and secrets
+        message = re.sub(r'(?i)Authorization:\s*Bearer\s+[a-zA-Z0-9_\-\.]+', 'Authorization: Bearer [REDACTED]', message)
+        message = re.sub(r'(?i)ghp_[a-zA-Z0-9]+', '[REDACTED_GITHUB_TOKEN]', message)
+        message = re.sub(r'(?i)sk-or-[a-zA-Z0-9\-]+', '[REDACTED_OPENROUTER_KEY]', message)
+        
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        log_line = f"[{timestamp}] {message}\n"
+        
+        # Use os.open with O_WRONLY | O_CREAT | O_APPEND and permission 0o600
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        mode = 0o600
+        fd = os.open(TRAFFIC_LOG, flags, mode)
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(log_line)
     except Exception as e:
         print(f"Failed to write traffic log: {e}")
 
@@ -68,6 +99,38 @@ def load_state():
             return state
     except:
         return {"step": "ask_api_key"}
+    
+def load_default_state():
+    """Load or initialize the configuration setup state using centralized defaults"""
+    if not os.path.exists(STATE_FILE):
+        config_path = os.path.expanduser("~/.opencodereview/config.json")
+        has_token = False
+        if os.path.exists(config_path):
+            try:
+                with open(config_path) as f:
+                    cfg = json.load(f)
+                    has_token = bool(cfg.get("llm", {}).get("auth_token"))
+            except:
+                pass
+        if not has_token:
+            return {"step": "ask_api_key"}
+        return DEFAULT_STATE.copy()
+    try:
+        with open(STATE_FILE) as f:
+            state = json.load(f)
+            # Apply missing defaults dynamically
+            for key, default_value in DEFAULT_STATE.items():
+                state.setdefault(key, default_value)
+            return state
+    except:
+        return {"step": "ask_api_key"}
+
+def get_state_or_env(state: dict, key: str, env_var: str) -> str:
+    """Generic helper to fetch a value from state with an environment variable fallback"""
+    token = state.get(key)
+    if token is None:
+        return os.getenv(env_var)
+    return token
 
 def get_github_token(state):
     """
@@ -116,6 +179,14 @@ def save_state(state):
             json.dump(state, f, indent=2)
     except Exception as e:
         print(f"Failed to save state: {e}")
+
+async def async_load_state():
+    async with _state_lock:
+        return load_state()
+
+async def async_save_state(state):
+    async with _state_lock:
+        save_state(state)
 
 def generate_goal_md(state):
     """Compiles configured loop targets into a GOAL.md file on disk"""
@@ -407,7 +478,7 @@ async def run_cli_stream(command_args):
     created_time = int(time.time())
     
     # Load state machine at the top of stream generator to prevent UnboundLocalError
-    state = load_state()
+    state = await async_load_state()
     
     async def yield_text(text):
         """Helper to yield a compliant OpenAI stream delta chunk"""
@@ -1274,7 +1345,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
                 "To start, please enter your **OpenRouter API Key** (starts with `sk-or-`):"
             )
             state["step"] = "await_api_key"
-            save_state(state)
+            await async_save_state(state)
             yield "data: [DONE]\n\n"
             return
 
@@ -1301,7 +1372,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
                 f"Next, to access private GitHub repositories, please enter your **GitHub Personal Access Token (PAT)**{env_hint}:"
             )
             state["step"] = "await_github_token"
-            save_state(state)
+            await async_save_state(state)
             yield "data: [DONE]\n\n"
             return
 
@@ -1363,7 +1434,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
                 "Enter a comma-separated list of additional providers/models, or type **none** to keep only `novita`:"
             )
             state["step"] = "await_whitelist"
-            save_state(state)
+            await async_save_state(state)
             yield "data: [DONE]\n\n"
             return
 
@@ -1390,7 +1461,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
                 "Choose a number or type a custom configuration (e.g., `zdr` or `data_collection`):"
             )
             state["step"] = "await_routing_policy"
-            save_state(state)
+            await async_save_state(state)
             yield "data: [DONE]\n\n"
             return
 
@@ -1440,22 +1511,25 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
                 f"* **Allow Fallbacks:** `{allow_fallbacks}`\n"
                 f"* **Require Parameters:** `{require_parameters}`\n\n"
                 "Next, select your preferred OpenRouter model (choose a number or type a custom model ID):\n\n"
-                "1. **deepseek/deepseek-v4-pro** (Strongest reasoning)\n"
-                "2. **z-ai/glm-5.2** (MoE agentic engineering)\n"
-                "3. **openrouter/fusion** (Balanced fusion)"
+                "1. **z-ai/glm-5.2** (high-performance reasoning)\n"
+                "2. **deepseek/deepseek-v4-pro** (low-cost reasoning)\n"
+                "3. **google/gemini-3.5-flash** (cost-efficient general purpose)\n"
+                "4. **openrouter/fusion** (Balanced fusion)"
             )
             state["step"] = "await_preferred_model"
-            save_state(state)
+            await async_save_state(state)
             yield "data: [DONE]\n\n"
             return
 
         elif step == "await_preferred_model":
             choice = command_args.lower()
             if choice == "1" or "pro" in choice:
-                selected_model = "deepseek/deepseek-v4-pro"
-            elif choice == "2" or "glm" in choice:
                 selected_model = "z-ai/glm-5.2"
+            elif choice == "2" or "glm" in choice:
+                selected_model = "deepseek/deepseek-v4-pro"
             elif choice == "3" or "fusion" in choice:
+                selected_model = "google/gemini-3.5-flash"
+            elif choice == "4" or "fusion" in choice:
                 selected_model = "openrouter/fusion"
             else:
                 selected_model = command_args
@@ -1476,7 +1550,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
                 "2. **No alternative** (Use the preferred model for everything)"
             )
             state["step"] = "await_alternative_model"
-            save_state(state)
+            await async_save_state(state)
             yield "data: [DONE]\n\n"
             return
 
@@ -1498,7 +1572,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
                 return
                 
             state["step"] = "loop_engineer_intro"
-            save_state(state)
+            await async_save_state(state)
             
             yield await yield_text(
                 "⚙️ **Alternative Model Configured!**\n\n"
@@ -1514,7 +1588,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
             choice = command_args.strip().lower()
             if choice in ("yes", "y", "sure", "start"):
                 state["step"] = "loop_step_1_trigger"
-                save_state(state)
+                await async_save_state(state)
                 yield await yield_text(
                     "### Step 1: Trigger (The Heartbeat) 💓\n\n"
                     "Determine how or when the loop fires (e.g., schedule, interval, webhooks, or PR comments).\n\n"
@@ -1523,7 +1597,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
             else:
                 # Skip the walkthrough, set default completed state
                 state["step"] = "completed"
-                save_state(state)
+                await async_save_state(state)
                 alt_tip = f"\n*Tip: If you want to use your lower-cost model, append `--model {state['alternative_model']}` to your scan/review commands!*" if state.get("alternative_model") != "None" else ""
                 yield await yield_text(
                     "🎉 **Configuration Complete! (Walkthrough Skipped)**\n\n"
@@ -1544,7 +1618,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
             choice = command_args.strip()
             state["loop_trigger"] = choice if (choice and choice.lower() != "default") else "On a new Git Issue or manually via chat"
             state["step"] = "loop_step_2_execution"
-            save_state(state)
+            await async_save_state(state)
             yield await yield_text(
                 "### Step 2: Execution Runbook (The Action) ⚙️\n\n"
                 "Define the core action. Ensure the agent has the tools to read state, run scans, generate reviews, and make changes.\n\n"
@@ -1557,7 +1631,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
             choice = command_args.strip()
             state["loop_execution"] = choice if (choice and choice.lower() != "default") else "scan workspace, write CODEREVIEW.md, parse TASKLIST.md, create-issues"
             state["step"] = "loop_step_3_verifier"
-            save_state(state)
+            await async_save_state(state)
             yield await yield_text(
                 "### Step 3: Verifier (Success Validator) 🔍\n\n"
                 "Define the success validator. Use deterministic testing or verifier agents to grade results independently after each turn.\n\n"
@@ -1570,7 +1644,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
             choice = command_args.strip()
             state["loop_verifier"] = choice if (choice and choice.lower() != "default") else "verify_xml.py syntax pass and verify_pairs.py completion check"
             state["step"] = "loop_step_4_stop_rules"
-            save_state(state)
+            await async_save_state(state)
             yield await yield_text(
                 "### Step 4: Stop Rules (Safety Rails) 🛑\n\n"
                 "Strict boundaries to prevent runaway runs. Specify constraints, failure thresholds, iteration caps, or max spend/tokens.\n\n"
@@ -1583,7 +1657,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
             choice = command_args.strip()
             state["loop_stop_rules"] = choice if (choice and choice.lower() != "default") else "Max 5 iterations or any unrecoverable error"
             state["step"] = "loop_step_5_memory"
-            save_state(state)
+            await async_save_state(state)
             yield await yield_text(
                 "### Step 5: Memory (State Persistence) 💾\n\n"
                 "State persistence on disk so context survives between restarts (e.g., updating task states on disk).\n\n"
@@ -1596,7 +1670,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
             choice = command_args.strip()
             state["loop_memory"] = choice if (choice and choice.lower() != "default") else "setup_state.json and TASKLIST.md"
             state["step"] = "loop_step_6_skills"
-            save_state(state)
+            await async_save_state(state)
             yield await yield_text(
                 "### Step 6: Skills (Dynamic Isolation) 🧠\n\n"
                 "Keep run-time code short by saving project-specific constraints in isolated `SKILL.md` files rather than stuffing them into prompt templates.\n\n"
@@ -1609,7 +1683,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
             choice = command_args.strip()
             state["loop_skills"] = choice if (choice and choice.lower() != "default") else "loop-engineer skill from loopmaxxer-bench"
             state["step"] = "loop_step_7_goal"
-            save_state(state)
+            await async_save_state(state)
             yield await yield_text(
                 "### Step 7: Define the Goal 🎯\n\n"
                 "Now, define the core objective of your development and review loop. This will be written directly to `GOAL.md`.\n\n"
@@ -1626,7 +1700,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
             goal_md = generate_goal_md(state)
             
             state["step"] = "loop_step_8_agents"
-            save_state(state)
+            await async_save_state(state)
             yield await yield_text(
                 "🎉 **Goal Saved! GOAL.md Has Been Written to Disk!**\n\n"
                 "### Step 8: Compile Agent Runbook 🤖\n\n"
@@ -1643,7 +1717,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
                 agents_md = generate_agents_md(state)
                 
                 state["step"] = "completed"
-                save_state(state)
+                await async_save_state(state)
                 
                 alt_tip = f"\n*Tip: If you want to use your lower-cost model, append `--model {state['alternative_model']}` to your scan/review commands!*" if state.get("alternative_model") != "None" else ""
                 
@@ -1673,6 +1747,70 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
             yield "data: [DONE]\n\n"
             return
 
+    # Intercept cd commands inside run_cli_stream
+    if command_args.strip().startswith("cd ") or command_args.strip() == "cd" or command_args.strip().startswith("cd\t"):
+        parts = command_args.strip().split(None, 1)
+        target = parts[1].strip() if len(parts) > 1 else "~"
+        if target == "~":
+            target = "."
+        current_cwd = state.get("cwd", ".")
+        combined = os.path.join(current_cwd, target)
+        try:
+            target_abs = get_secure_path(combined)
+            if os.path.isdir(target_abs):
+                relative_new_cwd = os.path.relpath(target_abs, WORKSPACE_ROOT)
+                state["cwd"] = relative_new_cwd
+                await async_save_state(state)
+                yield await yield_text(f"📁 **Changed directory to:** `{relative_new_cwd}`\n")
+            else:
+                yield await yield_text(f"❌ **Error:** `{target}` is not a directory.\n")
+        except PermissionError as e:
+            yield await yield_text(f"❌ **Security Error:** {e}\n")
+        except Exception as e:
+            yield await yield_text(f"❌ **Error:** {e}\n")
+        yield "data: [DONE]\n\n"
+        return
+
+    # Intercept ls commands inside run_cli_stream
+    if command_args.strip().startswith("ls ") or command_args.strip() == "ls" or command_args.strip().startswith("ls\t"):
+        parts = command_args.strip().split(None, 1)
+        target = parts[1].strip() if len(parts) > 1 else "."
+        if target.startswith("-"):
+            subparts = target.split()
+            potential_target = subparts[-1]
+            if potential_target.startswith("-"):
+                target = "."
+            else:
+                target = potential_target
+        current_cwd = state.get("cwd", ".")
+        combined = os.path.join(current_cwd, target)
+        try:
+            target_abs = get_secure_path(combined)
+            if os.path.isdir(target_abs):
+                items = []
+                with os.scandir(target_abs) as it:
+                    for entry in it:
+                        if entry.name in (".git", "node_modules", "__pycache__"):
+                            continue
+                        items.append(entry)
+                items.sort(key=lambda x: (not x.is_dir(), x.name.lower()))
+                output_lines = [f"### Directory listing for `{os.path.relpath(target_abs, WORKSPACE_ROOT)}`:\n"]
+                for item in items:
+                    rel_item_path = os.path.relpath(item.path, WORKSPACE_ROOT)
+                    if item.is_dir():
+                        output_lines.append(f"- 📁 **{item.name}/**")
+                    else:
+                        output_lines.append(f"- 📄 {item.name}  [📥 Download](/download/file?path={rel_item_path})")
+                yield await yield_text("\n".join(output_lines) + "\n")
+            else:
+                yield await yield_text(f"❌ **Error:** `{target}` is not a directory.\n")
+        except PermissionError as e:
+            yield await yield_text(f"❌ **Security Error:** {e}\n")
+        except Exception as e:
+            yield await yield_text(f"❌ **Error:** {e}\n")
+        yield "data: [DONE]\n\n"
+        return
+
     # Normalize command to strip redundant leading "ocr " or "ocr"
     if command_args.lower().startswith("ocr "):
         command_args = command_args[4:]
@@ -1693,6 +1831,19 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
     else:
         binary = "./ocr"
         parsed_args = shlex.split(command_args)
+
+    # Implement strict regex validation on user-supplied command arguments inside the shlex.split parser
+    for arg in parsed_args:
+        # Block options like --exec or dangerous/malicious option injection
+        if re.search(r'^--exec', arg) or arg == "--exec" or not re.match(r'^[a-zA-Z0-9_\-\./\+=\s:@~*?]+$', arg):
+            error_chunk = {
+                "id": "ocr",
+                "object": "chat.completion.chunk",
+                "choices": [{"delta": {"content": f"\n\n**[Security Error]** Invalid or dangerous argument detected: '{arg}'."}}]
+            }
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
 
     args = [binary] + parsed_args
 
@@ -1717,8 +1868,10 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
     yield f"data: {json.dumps({'id': 'ocr', 'object': 'chat.completion.chunk', 'created': created_time, 'model': 'deepseekv4glm5.2', 'choices': [{'delta': {'role': 'assistant', 'content': ''}}]})}\n\n"
     
     try:
+        active_cwd_abs = get_secure_path(state.get("cwd", "."))
         process = await asyncio.create_subprocess_exec(
             *args,
+            cwd=active_cwd_abs,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT
         )
@@ -1821,6 +1974,35 @@ async def list_models():
         ]
     }
 
+async def locked_generator(command_args):
+    # Check if it is a benchmark command
+    is_benchmark = (
+        command_args.lower() in ("benchmark market-making", "/benchmark market-making") or
+        command_args.lower().startswith("/benchmark escher") or command_args.lower().startswith("benchmark escher") or
+        command_args.lower().startswith("/benchmark selinux") or command_args.lower().startswith("benchmark selinux")
+    )
+    if is_benchmark:
+        if _ci_execution_lock.locked():
+            created_time = int(time.time())
+            chunk = {
+                "id": "ocr",
+                "object": "chat.completion.chunk",
+                "created": created_time,
+                "model": "deepseekv4glm5.2",
+                "choices": [{"delta": {"content": "⚠️ **Another benchmark execution is currently in progress. Please wait...**\n"}}]
+            }
+            yield f"data: {json.dumps(chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+        
+        async with _ci_execution_lock:
+            async for chunk in run_cli_stream(command_args):
+                yield chunk
+    else:
+        async for chunk in run_cli_stream(command_args):
+            yield chunk
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     auth_header = request.headers.get("Authorization", "")
@@ -1830,7 +2012,7 @@ async def chat_completions(request: Request):
         data = await request.json()
         
         # Load user-configured whitelist
-        state = load_state()
+        state = await async_load_state()
         whitelist = state.get("whitelist", ["novita"])
 
         def to_bool(val):
@@ -1934,7 +2116,7 @@ async def chat_completions(request: Request):
     messages = data.get("messages", [])
     last_message = messages[-1]["content"] if messages else "help"
     
-    return StreamingResponse(run_cli_stream(last_message), media_type="text/event-stream")
+    return StreamingResponse(locked_generator(last_message), media_type="text/event-stream")
 
 # Initialize a lock to prevent concurrent CI/CD tasks from corrupting workspace files
 _ci_execution_lock = asyncio.Lock()
@@ -1944,7 +2126,7 @@ async def trigger_ci_reviewer(pull_number: int):
     """Executes ci_reviewer.py sequentially in the background"""
     async with _ci_execution_lock:
         log_traffic(f"--- AUTONOMOUS WORKFLOW INITIATED FOR PR #{pull_number} ---")
-        state = load_state()
+        state = await async_load_state()
         git_token = get_github_token(state)
         
         if not git_token or git_token == "none":
@@ -1985,6 +2167,21 @@ async def download_tasklist():
     raise HTTPException(status_code=404, detail="TASKLIST.md has not been generated yet.")
 
 
+@app.get("/download/file")
+async def download_file(path: str):
+    """Securely serves a generic file from the workspace to prevent directory traversal"""
+    try:
+        abs_path = get_secure_path(path)
+        if os.path.exists(abs_path) and os.path.isfile(abs_path):
+            filename = os.path.basename(abs_path)
+            return FileResponse(abs_path, filename=filename, media_type="application/octet-stream")
+        raise HTTPException(status_code=404, detail="File not found.")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.get("/action/create-issues")
 async def action_create_issues():
     """Triggers task splitting and commits local markdown task issues"""
@@ -2014,7 +2211,7 @@ async def action_create_issues():
 @app.get("/action/create-pr")
 async def action_create_pr():
     """Autonomously pushes local updates and opens a standard branch PR on GitHub"""
-    state = load_state()
+    state = await async_load_state()
     git_token = get_github_token(state)
     if not git_token or git_token == "none":
         return HTMLResponse("<h2>❌ Setup Error</h2><p>GitHub Personal Access Token is not configured in Space Secrets or setup wizard.</p>", status_code=400)
