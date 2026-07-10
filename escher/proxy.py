@@ -364,7 +364,10 @@ def bootstrap_system():
                 init_data = json.loads(bootstrap_env)
                 api_key = init_data.get("api_key")
             except:
-                pass
+                print(f"⚠️ [System] json.loads(bootstrap_env) failed: {e}")
+    except:
+           print(f"⚠️ [System] bootstrap_system failed: {e}")
+
 
     try:
         init_data = json.loads(bootstrap_env)
