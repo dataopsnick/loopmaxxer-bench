@@ -77,6 +77,10 @@ dotenv.config({ path: '.env.local', override: true });
 process.env.HOST = '127.0.0.1';
 process.env.PORT = '7861';
 
+// Instruct SvelteKit to trust forwarding headers for CSRF origin verification
+process.env.PROTOCOL_HEADER = 'x-forwarded-proto';
+process.env.HOST_HEADER = 'x-forwarded-host';
+
 // Boot SvelteKit in the background
 import('./build/index.js');
 
@@ -91,6 +95,13 @@ const gateway = http.createServer((req, res) => {
   const targetHost = '127.0.0.1';
 
   const headers = { ...req.headers };
+  // Populates forwarding headers for SvelteKit CSRF origin comparison
+  if (!headers['x-forwarded-host']) {
+    headers['x-forwarded-host'] = req.headers['host'] || '127.0.0.1:7860';
+  }
+  if (!headers['x-forwarded-proto']) {
+    headers['x-forwarded-proto'] = 'http';
+  }
   headers['host'] = `${targetHost}:${targetPort}`;
 
   const proxyReq = http.request({
