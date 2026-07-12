@@ -2342,7 +2342,7 @@ async def download_file(path: str):
             return FileResponse(abs_path, filename=filename, media_type="application/octet-stream")
         raise HTTPException(status_code=404, detail="File not found.")
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        raise HTTPException(status_code=443, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
