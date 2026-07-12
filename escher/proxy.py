@@ -877,7 +877,7 @@ async def run_cli_stream(command_args):
             try:
                 yield await yield_text(f"🧪 [Diagnostic] Spawning './ocr' with path: {target_dir}\n")
                 ocr_proc = await asyncio.create_subprocess_exec(
-                    "./ocr", "scan",  "--include", "\"**/*.md\"", "--path", target_dir,
+                    "./ocr", "scan", "-rule", "rule.json", "--path", target_dir,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT
                 )
