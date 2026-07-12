@@ -1,0 +1,40 @@
+{
+  "include": [
+    "**/*.md",
+    "**/*.py",
+    "**/*.yml",
+    "**/*.yaml",
+    "**/*.sh"
+  ],
+  "rules": [
+    {
+      "path": "tests/**/*.py",
+      "rule": "### PR Fix Verifier constraints\nVerification tests must be deterministic and use the standard Python `unittest` framework. NEVER use external or network dependencies; mock all external API calls using `unittest.mock`. NEVER use `time.sleep()` or `asyncio.sleep()` to resolve timing issues. Test files must map directly to their task (e.g., `test_task_<ID>.py`).",
+      "merge_system_rule": true
+    },
+    {
+      "path": "**/*.py",
+      "rule": "### Anti-Slop (Anti-Reward Hacking) Rules\nAgents are strictly forbidden from taking shortcuts. Flag any of the following:\n1. Suppressed compiler/linter warnings inline (e.g., `# type: ignore`, `# pylint: disable`).\n2. Disabled tests (e.g., `@unittest.skip`, `pytest.mark.skip`).\n3. Silently swallowed exceptions (e.g., empty `except: pass` blocks). \n4. Arbitrary sleeps (`time.sleep`) instead of deterministic coordination primitives.",
+      "merge_system_rule": true
+    },
+    {
+      "path": "escher/proxy.py",
+      "rule": "### Security & Proxy Guardrails\nEnsure strict regex whitelist validation on user-supplied command arguments inside `shlex.split()`. Sanitize all file paths (e.g., using `get_secure_path`) to prevent directory traversal. Ensure sensitive tokens (GitHub PATs, OpenRouter API keys) are strictly scrubbed and redacted before logging to `traffic.log`.",
+      "merge_system_rule": true
+    },
+    {
+      "path": "{escher/ci_reviewer.py,ci_reviewer.py}",
+      "rule": "### CI Integration Gates\nEnsure subprocess executions use safe argument passing. Validations must be deterministic and only allow PR merges if all syntax compilations and tests return `exit code 0`. Guard against path traversal when resolving branch names and test file paths.",
+      "merge_system_rule": true
+    },
+    {
+      "path": ".github/workflows/**/*.yml",
+      "rule": "### GitHub Actions Least-Privilege\nFlag `permissions: write-all` as a critical security risk. Workflows must use strict least-privilege scoping. Ensure Guardian workflows successfully block unauthorized modifications to the `tests/` and `.github/workflows/` directories.",
+      "merge_system_rule": true
+    },
+    {
+      "path": "**/*.md",
+      "rule": "### Agent Instructions & Loop Engineering\nEnsure documentation formatting is clean. For Agent configuration files (like AGENTS.md, GOAL.md, or SKILL.md files), verify they adhere to the Loop Engineering 101 framework by explicitly defining Triggers, Execution steps, Verifiers, Stop Rules, and Memory state."
+    }
+  ]
+}
