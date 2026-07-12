@@ -1,4 +1,4 @@
-import asyncio
+ import asyncio
 import json
 import shlex
 import re
@@ -61,59 +61,8 @@ def log_traffic(message: str):
     except Exception as e:
         print(f"Failed to write traffic log: {e}")
 
-def load_state_from_env() -> dict or None:
-    """Extracts bootstrap state directly from environment variables, bypassing disk-read races."""
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    github_token = os.getenv("GITHUB_TOKEN", "none")
-    preferred_model = os.getenv("PREFERRED_MODEL", "deepseek/deepseek-v4-pro")
-    alternative_model = os.getenv("ALTERNATIVE_MODEL", "deepseek/deepseek-v4-flash")
-    zdr = os.getenv("ZDR", "false").lower() == "true"
-    data_collection = os.getenv("DATA_COLLECTION", "deny")
-    allow_fallbacks = os.getenv("ALLOW_FALLBACKS", "true").lower() == "true"
-    require_parameters = os.getenv("REQUIRE_PARAMETERS", "false").lower() == "true"
-    whitelist = ["novita", "google-ai-studio", "google-vertex"]
-
-    bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
-    if bootstrap_env:
-        try:
-            init_data = json.loads(bootstrap_env)
-            api_key = init_data.get("api_key")
-            github_token = init_data.get("github_token", "none")
-            whitelist = init_data.get("whitelist", whitelist)
-            preferred_model = init_data.get("preferred_model", preferred_model)
-            alternative_model = init_data.get("alternative_model", alternative_model)
-            zdr = init_data.get("zdr", zdr)
-            data_collection = init_data.get("data_collection", data_collection)
-            allow_fallbacks = init_data.get("allow_fallbacks", allow_fallbacks)
-            require_parameters = init_data.get("require_parameters", require_parameters)
-        except:
-            pass
-    if api_key:
-        return {
-            "step": "completed",
-            "api_key": "configured",
-            "github_token": github_token,
-            "whitelist": whitelist,
-            "preferred_model": preferred_model,
-            "alternative_model": alternative_model,
-            "zdr": zdr,
-            "data_collection": data_collection,
-            "allow_fallbacks": allow_fallbacks,
-            "require_parameters": require_parameters,
-            "policy_name": "Environment Auto-Bootstrapped"
-        }
-    return None
-
 def load_state():
     """Load or initialize the configuration setup state"""
-    env_state = load_state_from_env()
-    if env_state:
-        return env_state
-           
-    if not os.path.exists(STATE_FILE):
-           config_path = os.path.expanduser("~/.opencodereview/config.json")
-           has_token = False
-           
     bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
     if bootstrap_env:
         try:
@@ -126,7 +75,7 @@ def load_state():
                 "preferred_model": init_data.get("preferred_model", "deepseek/deepseek-v4-pro"),
                 "alternative_model": init_data.get("alternative_model", "None"),
                 "zdr": init_data.get("zdr", False),
-                "data_collection": init_data.get("data_collection", "deny"),
+                "data_collection": init_data.get("data_collection", "allow"),
                 "allow_fallbacks": init_data.get("allow_fallbacks", True),
                 "require_parameters": init_data.get("require_parameters", False),
                 "policy_name": "Environment Auto-Bootstrapped"
@@ -150,7 +99,7 @@ def load_state():
             "step": "completed",
             "whitelist": ["novita"],
             "zdr": False,
-            "data_collection": "deny",
+            "data_collection": "allow",
             "allow_fallbacks": True,
             "require_parameters": False
         }
@@ -162,22 +111,16 @@ def load_state():
             if "zdr" not in state:
                 state["zdr"] = False
             if "data_collection" not in state:
-                state["data_collection"] = "deny"
+                state["data_collection"] = "allow"
             if "allow_fallbacks" not in state:
                 state["allow_fallbacks"] = True
             if "require_parameters" not in state:
                 state["require_parameters"] = False
-            state["step"] = "completed"
             return state
     except:
-        print(f"⚠️ [System] json.load(STATE_FILE) failed: {e}")
         return {"step": "ask_api_key"}
     
 def load_default_state():
-    env_state = load_state_from_env()
-    if env_state:
-        return env_state
-
     """Load or initialize the configuration setup state using centralized defaults"""
     bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
     if bootstrap_env:
@@ -191,7 +134,7 @@ def load_default_state():
                 "preferred_model": init_data.get("preferred_model", "deepseek/deepseek-v4-pro"),
                 "alternative_model": init_data.get("alternative_model", "None"),
                 "zdr": init_data.get("zdr", False),
-                "data_collection": init_data.get("data_collection", "deny"),
+                "data_collection": init_data.get("data_collection", "allow"),
                 "allow_fallbacks": init_data.get("allow_fallbacks", True),
                 "require_parameters": init_data.get("require_parameters", False),
                 "policy_name": "Environment Auto-Bootstrapped"
@@ -350,24 +293,10 @@ This file defines our safe self-prompting loop under the **Loop Engineering 101*
     return agents_content
 
 def bootstrap_system():
-    """Bootstraps the system state using environment JSON if present."""
-    state = load_state_from_env()
-    if not state:
+    """Bootstraps the system state and OpenRouter config using environment JSON if present."""
+    bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
+    if not bootstrap_env:
         return
-
-    try:
-        # Extract raw API key for config file parsing
-        api_key = None
-        bootstrap_env = os.getenv("OCR_BOOTSTRAP_JSON")
-        if bootstrap_env:
-            try:
-                init_data = json.loads(bootstrap_env)
-                api_key = init_data.get("api_key")
-            except:
-                print(f"⚠️ [System] json.loads(bootstrap_env) failed: {e}")
-    except:
-           print(f"⚠️ [System] bootstrap_system failed: {e}")
-
 
     try:
         init_data = json.loads(bootstrap_env)
@@ -381,7 +310,7 @@ def bootstrap_system():
         
         # Extract policies
         zdr = init_data.get("zdr", False)
-        data_collection = init_data.get("data_collection", "deny")
+        data_collection = init_data.get("data_collection", "allow")
         allow_fallbacks = init_data.get("allow_fallbacks", True)
         require_parameters = init_data.get("require_parameters", False)
         
@@ -402,7 +331,7 @@ def bootstrap_system():
         save_state(state)
         
         # 2. Safely write configurations to ~/.opencodereview/config.json
-        update_ocr_config(auth_token=api_key, model=state["preferred_model"])
+        update_ocr_config(auth_token=api_key, model=preferred_model)
         
         # 3. Handle local/global Git rewrites if a token is present
         if github_token and github_token != "none":
@@ -415,7 +344,6 @@ def bootstrap_system():
         print("🤖 [System] Auto-bootstrapped successfully via environment configuration.")
     except Exception as e:
         print(f"⚠️ [System] Auto-bootstrap failed: {e}")
-
 
 # --- NATIVE AST PARSER & TREE WALKER FOR CODE INGESTION ---
 
@@ -623,7 +551,7 @@ async def call_openrouter_llm(system_prompt, user_prompt, state):
         return False
 
     payload["provider"] = {
-        "data_collection": state.get("data_collection", "deny"),
+        "data_collection": state.get("data_collection", "allow"),
         "zdr": to_bool(state.get("zdr", False)),
         "allow_fallbacks": to_bool(state.get("allow_fallbacks", True)),
         "only": state.get("whitelist", ["novita"]),
@@ -2189,7 +2117,7 @@ async def chat_completions(request: Request):
         
         # Enforce zero-data-retention parameters
         data["provider"] = {
-            "data_collection": state.get("data_collection", "deny"),
+            "data_collection": state.get("data_collection", "allow"),
             "zdr": to_bool(state.get("zdr", False)),
             "allow_fallbacks": to_bool(state.get("allow_fallbacks", True)),
             "only": whitelist,
