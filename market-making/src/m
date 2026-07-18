@@ -1,0 +1,8 @@
+//! Real-Time TIMS/SPAN Margin Modeling (Spec §12)
+//!
+//! OCC TIMS 17-scenario stress grid (±3%, ±8%, ±15% spot moves × ±10% vol shifts)
+//! with cross-asset delta/gamma netting for non-linear margin reduction.
+
+pub mod tims;
+
+pub use tims::{MarginScenario, TimsMarginModel, TimsResult};

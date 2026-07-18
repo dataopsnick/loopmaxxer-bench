@@ -1,0 +1,37 @@
+[package]
+name = "mr_market"
+version = "0.1.0"
+edition = "2021"
+description = "Simulated Mr. Market bookmaking operation with GMM hidden-state MLE position inference"
+
+[dependencies]
+tokio = { version = "1.40", features = ["full"] }
+crossbeam-queue = "0.3"
+ndarray = { version = "0.15", features = ["rayon"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+redis = { version = "0.27", features = ["tls-native-roots", "tokio-comp"] }
+reqwest = { version = "0.12", features = ["blocking"] }
+clap = { version = "4.5", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+rayon = "1.10"
+libc = "0.2"
+core_affinity = "0.8"
+
+[features]
+default = []
+# Solarflare EF_VI userspace driver FFI (Linux only, requires libonload)
+ef_vi = []
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Spec §16.1: enable native CPU intrinsics for FMA/AVX-512 auto-vectorization
+# Build with: RUSTFLAGS="-C target-cpu=native" cargo build --release
+
+[[bin]]
+name = "mr-market"
+path = "src/main.rs"

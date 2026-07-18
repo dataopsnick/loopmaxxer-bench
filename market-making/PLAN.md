@@ -1,142 +1,158 @@
-# Plan: "Mr. Market" Bookmaking Simulation with GMM Hidden-State MLE Position Inference
+# Plan: Production-Grade SOFR-Neutral Multi-Asset Market-Making Framework
 
-## Overview
+## Current State Analysis
 
-Build a Rust project that implements the Korean spec's market-making framework (Avellaneda-Stoikov reservation pricing, SOFR carry optimization, Whalley-Wilmott hedge bands, OFI microstructure drift, monotonic spline vol surface, pre-trade risk gates) as a **simulated** "Mr. Market" broker-dealer. The simulation replays IEX historical T&S / depth-of-book data through the engine, while a **Gaussian Mixture Model (GMM)** with 3 hidden states (noise trader, institutional buyer, informed insider) is fit via EM on observed order-flow features. The MLE position size of the delta-neutral level-IV market maker is then inferred by maximizing expected log-likelihood of P&L given the fitted mixture, adverse selection costs, and SOFR carry.
+After thorough exploration, I've confirmed the following:
 
-## Architecture
+**Already implemented (simulation-grade, with unit tests):**
+- `src/symbology.rs` — PackedAssetKey (§2) ✅
+- `src/portfolio.rs` — AtomicPortfolioState, AlignedGreeksTracker (§5, §15, §20) ✅
+- `src/pricer.rs` — UltraFastPricer: Hastings CDF + BS (§13) ✅
+- `src/vol_surface.rs` — MonotonicCubicSplineEvaluator (§23) ✅
+- `src/sofr.rs` — SOFRHedgeController, WW bands (§3, §5.3) ✅
+- `src/ofi.rs` — MicrostructureOFI (§17) ✅
+- `src/bookmaker.rs` — Bookmaker (§18, §29) ✅
+- `src/risk_gate.rs` — PreTradeRiskGate (§24) ✅
+- `src/hedging/router.rs` — HedgingRoutingMatrix (§22, §25) ✅
+- `src/margin/tims.rs` — TimsMarginModel (§12) ✅
+- `src/term_structure/estimator.rs` — TermStructureBetaEstimator (§14) ✅
+- `src/simulation.rs`, `src/gmm/`, `src/mle/` ✅
 
-```
-src/
-├── main.rs                  # Entry point: orchestrate download → load → fit GMM → run sim → infer MLE
-├── symbology.rs             # PackedAssetKey (spec §2)
-├── portfolio.rs             # AtomicPortfolioState, AlignedGreeksTracker (spec §5, §15, §20)
-├── pricer.rs                # UltraFastPricer: Hastings CDF, Black-Scholes (spec §13)
-├── vol_surface.rs           # MonotonicCubicSplineEvaluator (spec §23)
-├── sofr.rs                  # SOFRHedgeController, Whalley-Wilmott bands (spec §3, §5.3)
-├── ofi.rs                   # MicrostructureOFI drift estimator (spec §17)
-├── bookmaker.rs             # Reservation price + indifference spread quoting (spec §18, §29)
-├── risk_gate.rs             # PreTradeRiskGate (spec §24)
-├── iex/
-│   ├── mod.rs
-│   ├── downloader.rs        # Download IEX historical PCAP files by date/symbol
-│   └── parser.rs            # Parse IEX PCAP → TOPS/DEEP/Trade messages → MarketEvent structs
-├── memorydb/
-│   ├── mod.rs
-│   ├── client.rs            # Redis-protocol client (redis crate) for AWS MemoryDB
-│   └── vector_store.rs      # Time-series vector storage + similarity query for MLE feature lookup
-├── gmm/
-│   ├── mod.rs
-│   ├── model.rs             # 3-component GMM: noise, institutional, informed
-│   ├── em.rs                # Expectation-Maximization fitting algorithm
-│   └── features.rs          # Extract order-flow features (size, direction, price impact, OFI)
-├── mle/
-│   ├── mod.rs
-│   ├── position.rs          # MLE position size inference for delta-neutral MM
-│   └── likelihood.rs        # Log-likelihood: spread revenue − adverse selection − SOFR carry
-└── simulation.rs            # Mr. Market replay engine: feed IEX data → quote → fill → update portfolio
-```
+**Issues found:**
+- `src/margin/` is missing a `mod.rs` file (only has `tims.rs`)
+- `hedging`, `margin`, `term_structure` modules are NOT declared in `main.rs`
+- README only covers simulation-grade architecture
 
-## Key Design Decisions
+## Implementation Plan
 
-### 1. IEX Historical Data (Constraint 2)
-- IEX provides free historical data at `iextrading.com/trading/market-data/#hist-download` as daily PCAP files (TOPS = top-of-book, DEEP = full depth, plus trade data).
-- `iex/downloader.rs` will fetch PCAP files by date via HTTP (using `reqwest`).
-- `iex/parser.rs` will parse the PCAP → IEX message format (header + payload) to extract:
-  - **T&S**: trade price, size, timestamp, symbol
-  - **Depth of book**: bid/ask price/size at multiple levels
-  - **Last sale**: trade events
-- A CSV fallback reader will be included for testing without downloading full PCAPs.
+### Phase 1: Wire Existing Modules & Fix Structure
+1. Create `src/margin/mod.rs` to export `tims` submodule
+2. Add `mod hedging;`, `mod margin;`, `mod term_structure;` declarations to `main.rs`
+3. Verify `cargo build` passes with existing code
 
-### 2. AWS MemoryDB as Time-Series Vector DB (Constraint 3)
-- MemoryDB is Redis-compatible; use the `redis` crate with TLS support.
-- `memorydb/client.rs`: connection pool, TLS config, MemoryDB endpoint.
-- `memorydb/vector_store.rs`: store market microstructure feature vectors (OFI, spread, trade imbalance, volatility) as Redis sorted sets + hash fields keyed by timestamp. Use Redis `FT.SEARCH` (RediSearch module available in MemoryDB) for vector similarity queries to find historically similar regimes for MLE positioning.
-- Feature vectors: `[normalized_trade_size, signed_order_flow, OFI_ewma, spread_width, vol_atm, return_predictability]`
+### Phase 2: New Production-Grade Modules
 
-### 3. GMM Hidden-State Model
-Three Gaussian components modeling the order-flow generating process:
+#### 2.1 `src/codec/` — Zero-Copy SBE/FIX Binary Serialization (§8)
+- `mod.rs` — module exports
+- `fix_template.rs` — Pre-allocated fixed-buffer FIX 4.4 message templates with offset-based field stuffing (no `format!`/`write!` on hot path)
+- `sbe_encoder.rs` — SBE template blitting for outbound New Order Single (NOS) and mass-cancel messages
+- `IoSlice`/`sendto` integration for NIC submission
+- Unit tests: template stuffing, byte-level verification
 
-| Component | Mean (signed size) | Std | Interpretation |
-|-----------|-------------------|-----|----------------|
-| Noise trader | ~0 | small | Symmetric, no info |
-| Institutional | large positive (or negative) | medium | Persistent directional flow |
-| Informed insider | medium, correlated with future returns | small | Adverse selection |
+#### 2.2 `src/purge/` — SQF Purge Driver & COB Legging Defense (§9)
+- `mod.rs` — module exports
+- `sqf_driver.rs` — `LowLatencyPurgeDriver` with 40-byte `#[repr(C, packed)]` `SQFPurgeRequest` frame, non-blocking UDP socket, zero-allocation `unsafe` pointer-cast payload
+- `cob_defense.rs` — Complex Order Book (COB) `msgspreadbookquote` ingestion and asymmetric skew repositioning
+- Unit tests: frame serialization, COB skew logic
 
-- `gmm/em.rs`: Standard EM algorithm (E-step: posterior responsibilities, M-step: update μ, σ, π) fit on historical order-flow feature vectors from IEX data.
-- The fitted GMM gives posterior probabilities P(state | observed order) at each tick, which feeds into the MLE position inference.
+#### 2.3 `src/recorder/` — Columnar mmap Time-Series Recorder (§10)
+- `mod.rs` — module exports
+- `mapped_writer.rs` — `MappedColumnarWriter` using `mmap` + `O_DIRECT` (Linux, gated by `cfg(target_os = "linux")`), columnar layout (u64 timestamp, f64 price, u32 size), `Drop` with `munmap` cleanup, overflow protection
+- Fallback in-memory writer for macOS dev
+- Unit tests: append/read, overflow, capacity
 
-### 4. MLE Position Size Inference
-The delta-neutral market maker's expected log-likelihood per unit time:
+#### 2.4 `src/dropcopy/` — FIX Drop Copy Closed-Loop Listener (§19, §20)
+- `mod.rs` — module exports
+- `listener.rs` — `RawDropCopyListener` with zero-allocation byte-scanning FIX 4.4 parser, SOH-delimited tag extraction (Tag 35, 150, 32, 54), direct atomic CAS update of `AtomicPortfolioState.net_delta`, fragmented frame carry-over
+- Unit tests: tag extraction, partial frame, fill delta update
 
-$$\mathcal{L}(q) = \mathbb{E}[\text{spread revenue}(q)] - \mathbb{E}[\text{adverse selection}(q)] - \Phi_{\text{SOFR}}(q)$$
+#### 2.5 `src/ingestion/` — Hardware-Bypass Ingestion & NUMA Topology (§4, §28, §31-34)
+- `mod.rs` — module exports
+- `ef_vi.rs` — Solarflare EF_VI C FFI bindings (`ef_driver_open`, `ef_pd_alloc`, `ef_memreg_alloc`, `ef_vi_alloc_from_pd`, `ef_vi_rx_post`, `ef_eventq_poll`), gated behind `cfg(target_os = "linux")` and `feature = "ef_vi"`
+- `dma_buffer.rs` — Page-aligned `#[repr(C, align(4096))]` DMA frame buffers with `mlock`
+- `numa.rs` — NUMA-aware thread pinning via `core_affinity` crate
+- `spider_stream.rs` — Zero-copy SBE/SpiderStream header overlay casting (`SpiderStreamHeader`, `StockBookQuoteBody`)
+- `driver.rs` — `UserspaceIngestionDriver` with polling loop
+- Unit tests: struct overlay casting, NUMA pinning (mock)
 
-Where:
-- **Spread revenue** ∝ κ · (fill rate) · spread_width — depends on noise-trader mixture weight π_noise
-- **Adverse selection** ∝ E[|future return| · |informed flow|] — depends on informed-trader weight π_informed and their directional mean μ_informed
-- **SOFR carry** = the spec's Φ_SOFR(q) function from §3.2
+#### 2.6 `src/clearing/` — CMTA Post-Trade Clearing & Margin Sweep (§6)
+- `mod.rs` — module exports
+- `cmta.rs` — Multi-strike option position aggregation, step-out netting, cross-expiration compression
+- `margin_sweep.rs` — SPAN/TIMS haircut minimization, EOD clearing broker API integration stub, excess margin sweep to bilateral repo / SOFR overnight deposits
+- Unit tests: netting compression, sweep logic
 
-The MLE position q* is found by:
-1. For each candidate q, compute expected log-likelihood using the fitted GMM parameters and historical conditional expectations
-2. Use grid search + golden-section optimization (no external solver dependency) to find argmax
-3. The result is the "level IV broker dealer" optimal inventory that balances spread harvesting vs. adverse selection vs. carry cost
+### Phase 3: Extend Existing Modules
 
-### 5. Spec Engine Components (from the Korean spec)
-All core components from the spec are implemented as the simulation's quoting/hedging engine:
-- **PackedAssetKey** (§2): 128-bit packed symbology
-- **AtomicPortfolioState** (§5, §15, §20): lock-free atomic Greeks tracking
-- **UltraFastPricer** (§13): Hastings rational CDF approximation + Black-Scholes
-- **MonotonicCubicSplineEvaluator** (§23): Hyman-filtered vol surface
-- **SOFRHedgeController** (§3, §5.3): Whalley-Wilmott bands with SOFR drift correction
-- **MicrostructureOFI** (§17): EWMA OFI drift → reservation price adjustment
-- **Reservation pricing + indifference spread** (§18, §29): Avellaneda-Stoikov with SOFR penalty
-- **PreTradeRiskGate** (§24): 10ns pre-trade validation
+#### 3.1 Extend `src/vol_surface.rs` — Real-Time Taylor Expansion (§7)
+- Add `TaylorVolSurface` struct with ATM-centered 2nd-order expansion coefficients
+- `σ(S+ΔS, K, τ+Δτ) ≈ σ_ATM + ∂σ/∂S·ΔS + ½·∂²σ/∂S²·ΔS² + ∂σ/∂τ·Δτ`
+- Background Kalman filter / Ridge-regularized OLS refit stub (ms cadence)
+- Hot-path read-only coefficient vector load
+- Unit tests: Taylor expansion accuracy, coefficient update
 
-### 6. Simulation Flow (`simulation.rs`)
-```
-1. Download/load IEX historical data for target symbols (AAPL, NVDA, etc.)
-2. Parse → stream of MarketEvent (quote updates, trades)
-3. Store feature vectors in MemoryDB
-4. Fit GMM on historical order-flow features (EM)
-5. Replay events through Mr. Market engine:
-   a. On quote update: update OFI, recompute reservation price, emit bid/ask
-   b. On trade: check if our quote was crossed → simulate fill → update portfolio delta
-   c. Portfolio delta drift → Whalley-Wilmott hedge evaluation → emit hedge orders
-   d. Pre-trade risk gate validates every outbound order
-6. After replay: compute MLE position size q* from fitted GMM + realized P&L
-7. Output: optimal q*, GMM parameters, P&L attribution, SOFR carry analysis
-```
+#### 3.2 Extend `src/bookmaker.rs` — Online κ Estimator (§27)
+- Add `KappaEstimator` struct with sliding-window fill arrival intensity tracking
+- `κ_i(t) = ln(1 + N_fills / (λ_arrival · Δt)) / D̄_spread` computation
+- Per-strike dynamic spread widening when market depth thins
+- Unit tests: kappa adaptation, spread widening
 
-## Dependencies (`Cargo.toml`)
-```toml
-[dependencies]
-tokio = { version = "1.40", features = ["full"] }
-crossbeam-queue = "0.3"
-ndarray = { version = "0.15", features = ["rayon"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-chrono = "0.4"
-redis = { version = "0.27", features = ["tls-native-roots", "tokio-comp"] }
-reqwest = { version = "0.12", features = ["blocking"] }
-pcap = "2.0"
-clap = { version = "4.5", features = ["derive"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-rayon = "1.10"
-```
+### Phase 4: Production Orchestrator (§16, §29)
 
-## Risks & Mitigations
-1. **Broken Homebrew cargo** (libgit2 mismatch): Will attempt to fix via symlink or install rustup. If neither works, code will still be correct and compilable once cargo is fixed.
-2. **IEX PCAP format complexity**: The IEX PCAP format has specific message schemas. Will implement a parser based on the documented IEX message types, with a CSV fallback for testing.
-3. **MemoryDB availability**: If no live MemoryDB cluster is available, will include a local Redis fallback mode for development/testing.
-4. **GMM convergence**: EM can get stuck in local optima. Will use k-means++ initialization and multiple restarts.
+#### 4.1 `src/orchestrator/`
+- `mod.rs` — module exports
+- `live_tick.rs` — `LiveMarketTick` struct with `PackedAssetKey`, spot, strike, expiry, bid/ask px/sz
+- `orchestrator.rs` — `ActiveOrchestrator` integrating all subsystems into a single NUMA-pinned spin loop
+- Pipeline: ingest → spline vol → reservation price + OFI → spread → risk gate → DMA submit
+- 65k-capacity `ArrayQueue<LiveMarketTick>` lock-free ring buffer
+- `direct_dma_submit_nos` hook for SmartNIC TX descriptor writes
+- Unit tests: pipeline integration, tick processing
 
-## Deliverables
-- Complete Rust workspace with all modules
-- `Cargo.toml` with all dependencies
-- CLI interface (via `clap`) to specify: symbols, date range, MemoryDB endpoint, SOFR rate, risk parameters
-- Output report: GMM parameters, MLE position size q*, P&L breakdown, SOFR carry analysis
-- README with build & run instructions
+### Phase 5: Integration & Documentation
+
+#### 5.1 Integration Test
+- `tests/integration_test.rs` — synthetic tick stream → full pipeline → outbound quote/hedge validation
+
+#### 5.2 Benchmark Harness
+- `benches/hot_path.rs` — sub-microsecond latency benchmark for reservation pricing + risk gate + spread computation
+
+#### 5.3 Update `Cargo.toml`
+- Add `criterion` as dev-dependency for benchmarks
+
+#### 5.4 Update `README.md`
+- Add production-grade architecture table
+- Document build flags: `RUSTFLAGS="-C target-cpu=native" cargo build --release`
+- NUMA pinning instructions (`isolcpus`, `pthread_setaffinity_np`)
+- `RLIMIT_MEMLOCK=unlimited` setup (`/etc/security/limits.conf`)
+- EF_VI feature flag documentation
+
+#### 5.5 Update `main.rs`
+- Add `mod` declarations for all new modules
+- Add CLI subcommand `live` for production orchestrator mode (with simulation fallback on macOS)
+
+### Key Design Decisions
+
+1. **Platform gating**: All Linux-specific code (EF_VI, mmap/O_DIRECT, mlock) uses `cfg(target_os = "linux")` with macOS-compatible fallbacks for development
+2. **Unsafe code**: All `unsafe` blocks include `// SAFETY:` comments and are gated behind `cfg(target_os = "linux")` where platform-specific
+3. **Alignment**: All hot-path risk state structs use `#[repr(align(64))]`
+4. **Atomic ordering**: `Ordering::Relaxed` for hot-path reads, `Release/Acquire` for cross-thread publication, `SeqCst` only for kill-switch state
+5. **No new heavy dependencies**: Hand-rolled SBE encoder, FIX parser, QP solver (existing approach)
+
+### Files to Create/Modify
+
+| Action | File | Spec § |
+|--------|------|--------|
+| Create | `src/codec/mod.rs`, `src/codec/fix_template.rs`, `src/codec/sbe_encoder.rs` | §8 |
+| Create | `src/purge/mod.rs`, `src/purge/sqf_driver.rs`, `src/purge/cob_defense.rs` | §9 |
+| Create | `src/recorder/mod.rs`, `src/recorder/mapped_writer.rs` | §10 |
+| Create | `src/dropcopy/mod.rs`, `src/dropcopy/listener.rs` | §19, §20 |
+| Create | `src/ingestion/mod.rs`, `src/ingestion/ef_vi.rs`, `src/ingestion/dma_buffer.rs`, `src/ingestion/numa.rs`, `src/ingestion/spider_stream.rs`, `src/ingestion/driver.rs` | §4, §28, §31-34 |
+| Create | `src/clearing/mod.rs`, `src/clearing/cmta.rs`, `src/clearing/margin_sweep.rs` | §6 |
+| Create | `src/orchestrator/mod.rs`, `src/orchestrator/live_tick.rs`, `src/orchestrator/orchestrator.rs` | §16, §29 |
+| Create | `src/margin/mod.rs` | §12 |
+| Modify | `src/vol_surface.rs` (add Taylor expansion) | §7 |
+| Modify | `src/bookmaker.rs` (add κ estimator) | §27 |
+| Modify | `src/main.rs` (add module declarations + `live` subcommand) | — |
+| Modify | `Cargo.toml` (add criterion dev-dep) | — |
+| Modify | `README.md` (production docs) | — |
+| Create | `tests/integration_test.rs` | — |
+| Create | `benches/hot_path.rs` | — |
+
+### Risks & Mitigations
+
+1. **macOS development**: All Linux-specific syscalls (mmap/O_DIRECT, EF_VI FFI, mlock) are `cfg`-gated with in-memory fallbacks so `cargo build`/`cargo test` works on macOS
+2. **EF_VI FFI**: The `extern "C"` bindings link against `libonload` which only exists on Linux; gated behind `feature = "ef_vi"` and `cfg(target_os = "linux")`
+3. **Unsafe code review**: Every `unsafe` block has a `// SAFETY:` comment explaining the invariant
+4. **Clippy compliance**: All new code will pass `cargo clippy` with no warnings
 
 ---
 
