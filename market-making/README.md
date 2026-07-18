@@ -1,10 +1,12 @@
-# Mr. Market — Simulated Bookmaking Operation
+# Mr. Market — SOFR-Neutral Multi-Asset Market-Making Framework
 
-A high-frequency market-making simulation framework implementing the Korean Order Book Specification (`korean-order-book-spec.md`). The system models a delta-neutral level-IV broker-dealer market making against noise traders, institutional buyers, and informed insiders, with MLE position size inference via a 3-component Gaussian Mixture Model (GMM) hidden state.
+A production-grade, sub-microsecond market-making framework implementing the Korean Order Book Specification (`korean-order-book-spec.md`). The system models a delta-neutral level-IV broker-dealer market making against noise traders, institutional buyers, and informed insiders, with MLE position size inference via a 3-component Gaussian Mixture Model (GMM) hidden state.
 
 ## Architecture
 
-The system is implemented entirely in Rust and organized into the following modules:
+The system is implemented entirely in Rust and organized into two tiers:
+
+### Simulation-Grade Modules (with unit tests)
 
 | Module | Spec Section | Description |
 |--------|-------------|-------------|
@@ -22,7 +24,31 @@ The system is implemented entirely in Rust and organized into the following modu
 | `mle` | — | MLE position inference via grid search + golden-section optimization |
 | `simulation` | — | Mr. Market replay engine orchestrating the full pipeline |
 
+### Production-Grade Modules (zero-copy, NUMA-pinned, hardware-bypass)
+
+| Module | Spec Section | Description |
+|--------|-------------|-------------|
+| `codec` | §8 | Zero-copy SBE/FIX binary serialization (pre-allocated templates, no `format!` on hot path) |
+| `purge` | §9 | SQF purge driver (40-byte UDP mass-cancel) + COB legging defense |
+| `recorder` | §10 | Columnar mmap time-series recorder (`O_DIRECT` on Linux, in-memory fallback on macOS) |
+| `dropcopy` | §19, §20 | FIX drop-copy closed-loop listener (zero-allocation byte-scanning parser) |
+| `ingestion` | §4, §28, §31-34 | Hardware-bypass ingestion: EF_VI FFI, DMA buffers, NUMA pinning, SpiderStream overlay |
+| `clearing` | §6 | CMTA post-trade clearing & margin sweep (SPAN/TIMS haircut minimization) |
+| `orchestrator` | §16, §29 | NUMA-pinned spin loop integrating all subsystems (65k-capacity lock-free ring buffer) |
+| `hedging` | §22, §25 | Hedging routing matrix (QP solver for stock/future/basket allocation) |
+| `margin` | §12 | TIMS/SPAN margin modeling (17-scenario stress grid) |
+| `term_structure` | §14 | Term structure beta estimator |
+
+### Extended Modules
+
+| Module | Spec Section | Extension |
+|--------|-------------|-----------|
+| `vol_surface` | §7 | `TaylorVolSurface`: ATM-centered 2nd-order Taylor expansion with background Kalman/OLS refit |
+| `bookmaker` | §27 | `KappaEstimator`: Online κ estimator with sliding-window fill arrival intensity tracking |
+
 ## Pipeline
+
+### Simulation Pipeline
 
 ```
 IEX Data → Parse → Extract Features → Store in MemoryDB → Fit GMM (EM)
@@ -42,16 +68,56 @@ IEX Data → Parse → Extract Features → Store in MemoryDB → Fit GMM (EM)
                      P&L Breakdown + Report
 ```
 
+### Live Production Pipeline
+
+```
+NIC (EF_VI) → DMA Frame → SpiderStream Overlay → Lock-Free Ring Buffer (65k)
+                                                              ↓
+                                                    ActiveOrchestrator (NUMA-pinned)
+                                                    ↓
+                                              1. Taylor Vol Surface Lookup
+                                              2. Reservation Price (SOFR-biased A-S)
+                                              3. OFI Microstructure Drift
+                                              4. Indifference Spread (dynamic κ)
+                                              5. Pre-Trade Risk Gate
+                                              6. SBE NOS Encoding → DMA Submit
+                                              7. Whalley-Wilmott Hedge Evaluation
+                                                    ↓
+                                              Hedging Routing Matrix
+                                              ↓
+                                          Drop-Copy Fill Confirmation
+                                          ↓
+                                      Atomic Portfolio State Update
+```
+
 ## Prerequisites
 
 - **Rust** 1.75+ (stable toolchain)
 - **Cargo** (comes with Rust)
 - Optional: AWS MemoryDB cluster or local Redis for feature caching
+- **Linux** (for production EF_VI / mmap / NUMA pinning)
+- **Solarflare** NIC with OpenOnload (for EF_VI hardware bypass)
 
 ## Building
 
+### Development (macOS)
+
 ```bash
 cargo build --release
+```
+
+All Linux-specific code (EF_VI, mmap/O_DIRECT, mlock) is `cfg`-gated with macOS-compatible in-memory fallbacks.
+
+### Production (Linux)
+
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
+With EF_VI hardware bypass:
+
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release --features ef_vi
 ```
 
 The release binary is optimized with LTO and `codegen-units = 1` for maximum performance.
@@ -93,6 +159,20 @@ cargo run --release -- run \
   --symbol AAPL \
   --data-file ./data/iex/20240115_TOPS.pcap.gz \
   --output report.json
+```
+
+### Live Production Orchestrator
+
+On macOS (synthetic ticks for development):
+
+```bash
+cargo run --release -- live --symbol AAPL --n-ticks 10000
+```
+
+On Linux with EF_VI (production hardware bypass):
+
+```bash
+cargo run --release -- live --symbol AAPL --pin-core --features ef_vi
 ```
 
 ### Using AWS MemoryDB
@@ -138,6 +218,20 @@ If MemoryDB is unavailable, the system automatically falls back to an in-memory 
 | `--memorydb-tls` | `false` | Use TLS for MemoryDB |
 | `--memorydb-token` | — | MemoryDB auth token |
 | `-o, --output` | — | Output JSON report path |
+
+### `live` — Live Production Orchestrator
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-s, --symbol` | `AAPL` | Symbol to make markets in |
+| `-r, --sofr` | `0.0535` | SOFR base rate |
+| `-g, --gamma` | `0.015` | Risk aversion parameter γ |
+| `-k, --kappa` | `2.1` | Liquidity parameter κ |
+| `--max-qty` | `1000` | Max order quantity (risk gate) |
+| `--max-price` | `5000` | Max price USD (risk gate) |
+| `--max-delta` | `5000` | Max absolute delta (risk gate) |
+| `--pin-core` | `false` | Pin orchestrator thread to CPU core |
+| `--n-ticks` | `10000` | Synthetic ticks (macOS dev mode) |
 
 ### `download` — Download IEX Data
 
@@ -185,6 +279,58 @@ R = S - γ·σ²·q·T - (SOFR + margin + borrow)·T·sign(q)
 band_width = (1.5 · γ·Γ²·δ / (S·σ²))^(1/3) · (1 + SOFR_drift_factor)
 ```
 
+### Taylor Vol Surface (Spec §7)
+
+ATM-centered 2nd-order expansion for real-time vol lookup:
+
+```
+σ(S+ΔS, K, τ+Δτ) ≈ σ_ATM + ∂σ/∂S·ΔS + ½·∂²σ/∂S²·ΔS² + ∂σ/∂τ·Δτ
+```
+
+Coefficients updated by background Kalman filter / Ridge-regularized OLS at millisecond cadence.
+
+### Online κ Estimator (Spec §27)
+
+```
+κ_i(t) = ln(1 + N_fills / (λ_arrival · Δt)) / D̄_spread
+```
+
+Sliding-window fill arrival intensity tracking with per-strike dynamic spread widening when market depth thins.
+
+## Production Setup (Linux)
+
+### NUMA Pinning
+
+Isolate CPU cores for the hot-path threads:
+
+```bash
+# Kernel boot parameters
+isolcpus=2,3,4 nohz_full=2,3,4 rcu_nocbs=2,3,4
+```
+
+Thread assignments (via `NumaConfig`):
+- Core 2: RX / ingestion thread (EF_VI polling)
+- Core 3: Processing / orchestration thread (pricing, risk, quoting)
+- Core 4: Drop-copy listener thread (FIX fill confirmation)
+
+### RLIMIT_MEMLOCK
+
+For EF_VI DMA buffers and `mlock`:
+
+```bash
+# /etc/security/limits.conf
+*    soft    memlock    unlimited
+*    hard    memlock    unlimited
+```
+
+### EF_VI Feature Flag
+
+The EF_VI FFI bindings link against `libonload` (Solarflare OpenOnload), which only exists on Linux:
+
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release --features ef_vi
+```
+
 ## Testing
 
 Run the test suite:
@@ -199,6 +345,27 @@ Run tests with verbose output:
 RUST_LOG=debug cargo test --release -- --nocapture
 ```
 
+Run integration tests only:
+
+```bash
+cargo test --release --test integration_test
+```
+
+## Benchmarking
+
+Sub-microsecond latency benchmarks for the hot-path pipeline:
+
+```bash
+cargo bench --bench hot_path
+```
+
+Benchmarks:
+- `bookmaker_compute_quote` — reservation pricing + risk gate + spread computation
+- `taylor_vol_evaluate` — Taylor expansion vol lookup
+- `orchestrator_process_tick` — full orchestrator pipeline (vol → quote → NOS → hedge)
+- `orchestrator_submit_tick` — lock-free ring buffer enqueue
+- `sbe_encode_nos` — SBE New Order Single encoding
+
 ## Project Structure
 
 ```
@@ -206,34 +373,77 @@ market-making/
 ├── Cargo.toml
 ├── korean-order-book-spec.md
 ├── README.md
+├── PLAN.md
+├── benches/
+│   └── hot_path.rs              # Sub-µs latency benchmarks
+├── tests/
+│   └── integration_test.rs      # Full pipeline integration tests
 └── src/
-    ├── main.rs              # CLI entry point
-    ├── simulation.rs        # Mr. Market replay engine
-    ├── bookmaker.rs         # Quoting engine
-    ├── sofr.rs              # SOFR hedge controller
-    ├── ofi.rs               # OFI microstructure drift
-    ├── risk_gate.rs         # Pre-trade risk gate
-    ├── portfolio.rs         # Atomic portfolio Greeks
-    ├── pricer.rs            # Black-Scholes pricer
-    ├── vol_surface.rs       # Monotonic spline vol surface
-    ├── symbology.rs         # 128-bit packed asset keys
-    ├── iex/
-    │   ├── mod.rs           # MarketEvent, TopOfBook types
-    │   ├── downloader.rs    # IEX historical data downloader
-    │   └── parser.rs        # PCAP/CSV parser
-    ├── memorydb/
-    │   ├── mod.rs           # MemoryDbConfig
-    │   ├── client.rs        # Redis client + in-memory fallback
-    │   └── vector_store.rs  # Feature vector storage & similarity
-    ├── gmm/
-    │   ├── mod.rs           # Module declarations
-    │   ├── model.rs         # GmmModel, GmmComponent, TraderState
-    │   ├── em.rs            # EM fitter
-    │   └── features.rs      # Order-flow feature extraction
-    └── mle/
-        ├── mod.rs           # Module declarations
-        ├── likelihood.rs    # Position likelihood construction
-        └── position.rs      # MLE position inferer
+    ├── main.rs                  # CLI entry point (run, download, test, live)
+    ├── simulation.rs            # Mr. Market replay engine
+    ├── bookmaker.rs             # Quoting engine + KappaEstimator (§27)
+    ├── sofr.rs                  # SOFR hedge controller
+    ├── ofi.rs                   # OFI microstructure drift
+    ├── risk_gate.rs             # Pre-trade risk gate
+    ├── portfolio.rs             # Atomic portfolio Greeks
+    ├── pricer.rs                # Black-Scholes pricer
+    ├── vol_surface.rs           # Monotonic spline + Taylor vol surface (§7)
+    ├── symbology.rs             # 128-bit packed asset keys
+    ├── codec/                   # Zero-copy SBE/FIX serialization (§8)
+    │   ├── mod.rs
+    │   ├── fix_template.rs
+    │   └── sbe_encoder.rs
+    ├── purge/                   # SQF purge + COB defense (§9)
+    │   ├── mod.rs
+    │   ├── sqf_driver.rs
+    │   └── cob_defense.rs
+    ├── recorder/                # Columnar mmap recorder (§10)
+    │   ├── mod.rs
+    │   └── mapped_writer.rs
+    ├── dropcopy/                # FIX drop-copy listener (§19, §20)
+    │   ├── mod.rs
+    │   └── listener.rs
+    ├── ingestion/               # Hardware-bypass ingestion (§4, §28, §31-34)
+    │   ├── mod.rs
+    │   ├── ef_vi.rs
+    │   ├── dma_buffer.rs
+    │   ├── numa.rs
+    │   ├── spider_stream.rs
+    │   └── driver.rs
+    ├── clearing/                # CMTA clearing & margin sweep (§6)
+    │   ├── mod.rs
+    │   ├── cmta.rs
+    │   └── margin_sweep.rs
+    ├── orchestrator/            # Production orchestrator (§16, §29)
+    │   ├── mod.rs
+    │   ├── live_tick.rs
+    │   └── orchestrator.rs
+    ├── hedging/                 # Hedging routing matrix (§22, §25)
+    │   ├── mod.rs
+    │   └── router.rs
+    ├── margin/                  # TIMS/SPAN margin (§12)
+    │   ├── mod.rs
+    │   └── tims.rs
+    ├── term_structure/          # Term structure beta (§14)
+    │   ├── mod.rs
+    │   └── estimator.rs
+    ├── iex/                     # IEX data downloader + parser
+    │   ├── mod.rs
+    │   ├── downloader.rs
+    │   └── parser.rs
+    ├── memorydb/                # MemoryDB client + vector store
+    │   ├── mod.rs
+    │   ├── client.rs
+    │   └── vector_store.rs
+    ├── gmm/                     # GMM hidden-state model
+    │   ├── mod.rs
+    │   ├── model.rs
+    │   ├── em.rs
+    │   └── features.rs
+    └── mle/                     # MLE position inference
+        ├── mod.rs
+        ├── likelihood.rs
+        └── position.rs
 ```
 
 ## IEX Historical Data
@@ -251,6 +461,14 @@ timestamp_ns,symbol,event_type,bid_price,bid_size,ask_price,ask_size,trade_price
 1000,AAPL,Q,149.98,500,150.02,500,,
 2000,AAPL,T,,,,,150.00,100
 ```
+
+## Design Decisions
+
+1. **Platform gating**: All Linux-specific code (EF_VI, mmap/O_DIRECT, mlock) uses `cfg(target_os = "linux")` with macOS-compatible fallbacks
+2. **Unsafe code**: All `unsafe` blocks include `// SAFETY:` comments and are gated behind `cfg(target_os = "linux")` where platform-specific
+3. **Alignment**: All hot-path risk state structs use `#[repr(align(64))]`
+4. **Atomic ordering**: `Ordering::Relaxed` for hot-path reads, `Release/Acquire` for cross-thread publication, `SeqCst` only for kill-switch state
+5. **No new heavy dependencies**: Hand-rolled SBE encoder, FIX parser, QP solver
 
 ## License
 

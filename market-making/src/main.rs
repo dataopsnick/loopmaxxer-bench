@@ -6,17 +6,27 @@
 //! Based on the Korean Order Book Specification (korean-order-book-spec.md).
 
 mod bookmaker;
+mod clearing;
+mod codec;
+mod dropcopy;
 mod gmm;
+mod hedging;
 mod iex;
+mod ingestion;
+mod margin;
 mod memorydb;
 mod mle;
 mod ofi;
+mod orchestrator;
 mod portfolio;
 mod pricer;
+mod purge;
+mod recorder;
 mod risk_gate;
 mod simulation;
 mod sofr;
 mod symbology;
+mod term_structure;
 mod vol_surface;
 
 use clap::{Parser, Subcommand};
@@ -153,6 +163,45 @@ enum Commands {
         #[arg(short, long, default_value_t = 1000)]
         n_events: usize,
     },
+
+    /// Run the live production orchestrator (NUMA-pinned spin loop)
+    Live {
+        /// Symbol to make markets in (e.g. AAPL)
+        #[arg(short, long, default_value = "AAPL")]
+        symbol: String,
+
+        /// SOFR base rate
+        #[arg(short, long, default_value_t = 0.0535)]
+        sofr: f64,
+
+        /// Risk aversion parameter γ
+        #[arg(short = 'g', long, default_value_t = 0.015)]
+        gamma: f64,
+
+        /// Liquidity parameter κ
+        #[arg(short = 'k', long, default_value_t = 2.1)]
+        kappa: f64,
+
+        /// Max order quantity (risk gate)
+        #[arg(long, default_value_t = 1000)]
+        max_qty: u32,
+
+        /// Max price USD (risk gate)
+        #[arg(long, default_value_t = 5000.0)]
+        max_price: f64,
+
+        /// Max absolute delta (risk gate)
+        #[arg(long, default_value_t = 5000.0)]
+        max_delta: f64,
+
+        /// Pin orchestrator thread to a CPU core (Linux production)
+        #[arg(long, default_value_t = false)]
+        pin_core: bool,
+
+        /// Number of synthetic ticks to process (macOS dev mode)
+        #[arg(long, default_value_t = 10000)]
+        n_ticks: usize,
+    },
 }
 
 #[tokio::main]
@@ -258,6 +307,30 @@ async fn main() {
             let result = sim.run_synthetic(n_events, &mut store).await;
             print_report(&result);
         }
+
+        Commands::Live {
+            symbol,
+            sofr,
+            gamma,
+            kappa,
+            max_qty,
+            max_price,
+            max_delta,
+            pin_core,
+            n_ticks,
+        } => {
+            run_live_orchestrator(LiveArgs {
+                symbol,
+                sofr,
+                gamma,
+                kappa,
+                max_qty,
+                max_price,
+                max_delta,
+                pin_core,
+                n_ticks,
+            });
+        }
     }
 }
 
@@ -285,6 +358,103 @@ struct SimulationArgs {
     memorydb_tls: bool,
     memorydb_token: Option<String>,
     output: Option<String>,
+}
+
+/// Arguments for the `live` subcommand.
+struct LiveArgs {
+    symbol: String,
+    sofr: f64,
+    gamma: f64,
+    kappa: f64,
+    max_qty: u32,
+    max_price: f64,
+    max_delta: f64,
+    pin_core: bool,
+    n_ticks: usize,
+}
+
+/// Run the live production orchestrator.
+///
+/// On Linux with EF_VI, this enters a NUMA-pinned busy-poll loop reading
+/// from the NIC. On macOS, it processes synthetic ticks for development.
+fn run_live_orchestrator(args: LiveArgs) {
+    use crate::bookmaker::BookmakerConfig;
+    use crate::orchestrator::{ActiveOrchestrator, LiveMarketTick, OrchestratorConfig};
+    use crate::symbology::{sources, PackedAssetKey};
+
+    info!("Starting live orchestrator for {}", args.symbol);
+
+    let bookmaker_config = BookmakerConfig {
+        risk_aversion_gamma: args.gamma,
+        sofr_base_rate: args.sofr,
+        liquidity_kappa: args.kappa,
+        max_order_qty: args.max_qty,
+        max_price_usd: args.max_price,
+        max_delta: args.max_delta,
+        ..Default::default()
+    };
+
+    let orch_config = OrchestratorConfig {
+        bookmaker_config,
+        pin_to_core: args.pin_core,
+        ..Default::default()
+    };
+
+    let mut orch = ActiveOrchestrator::new(orch_config);
+
+    // On macOS (or without EF_VI), generate synthetic ticks for testing
+    #[cfg(not(all(target_os = "linux", feature = "ef_vi")))]
+    {
+        info!(
+            "macOS/dev mode: processing {} synthetic ticks for {}",
+            args.n_ticks, args.symbol
+        );
+
+        let key = PackedAssetKey::new_equity(sources::NMS, &args.symbol);
+
+        for i in 0..args.n_ticks as u64 {
+            let base_price = 150.0 + (i as f64 * 0.001).sin() * 2.0;
+            let bid = base_price - 0.02;
+            let ask = base_price + 0.02;
+            let tick = LiveMarketTick::new(key, base_price, bid, 500.0, ask, 500.0, i * 1_000_000);
+            orch.submit_tick(tick);
+        }
+
+        // Process all submitted ticks
+        let mut processed = 0;
+        while let Some(tick) = orch.tick_queue().pop() {
+            let quote = orch.process_tick(&tick);
+            if quote.is_some() {
+                processed += 1;
+            }
+        }
+
+        let stats = orch.stats();
+        println!();
+        println!("╔══════════════════════════════════════════════════════════════════╗");
+        println!("║          Live Orchestrator Report                                 ║");
+        println!("╚══════════════════════════════════════════════════════════════════╝");
+        println!();
+        println!("Symbol:           {}", args.symbol);
+        println!("Ticks submitted:  {}", args.n_ticks);
+        println!("Ticks processed:  {}", processed);
+        println!("Stats:            {}", stats.snapshot());
+        println!("Current κ:        {:.4}", orch.current_kappa());
+        println!("Kill switch:      {}", if orch.is_kill_switch_tripped() { "TRIPPED" } else { "OK" });
+        println!();
+    }
+
+    // On Linux with EF_VI, enter the real polling loop
+    #[cfg(all(target_os = "linux", feature = "ef_vi"))]
+    {
+        info!("Linux EF_VI mode: entering NUMA-pinned polling loop for {}", args.symbol);
+
+        // In production, the ingestion driver feeds ticks into the queue
+        // from a separate RX thread. The orchestrator processes them here.
+        orch.run();
+    }
+
+    info!("Live orchestrator finished");
 }
 
 async fn run_simulation(args: SimulationArgs) {

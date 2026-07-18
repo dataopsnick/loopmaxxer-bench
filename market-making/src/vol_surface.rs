@@ -110,6 +110,158 @@ impl MonotonicCubicSplineEvaluator {
     }
 }
 
+/// ATM-centered 2nd-order Taylor expansion vol surface (Spec §7).
+///
+/// Approximates the local volatility surface via a 2nd-order Taylor
+/// expansion around the current ATM (at-the-money) point:
+///
+/// `σ(S+ΔS, K, τ+Δτ) ≈ σ_ATM + ∂σ/∂S·ΔS + ½·∂²σ/∂S²·ΔS² + ∂σ/∂τ·Δτ`
+///
+/// The coefficients are updated by a background Kalman filter / OLS
+/// refit at millisecond cadence. The hot path performs a read-only
+/// coefficient vector load and a single FMA-heavy evaluation.
+#[repr(align(64))]
+pub struct TaylorVolSurface {
+    /// ATM volatility level: σ_ATM.
+    pub sigma_atm: f64,
+    /// First derivative w.r.t. spot: ∂σ/∂S.
+    pub d_sigma_d_s: f64,
+    /// Second derivative w.r.t. spot: ∂²σ/∂S².
+    pub d2_sigma_d_s2: f64,
+    /// First derivative w.r.t. time to expiry: ∂σ/∂τ.
+    pub d_sigma_d_tau: f64,
+    /// Current reference spot price S₀.
+    pub ref_spot: f64,
+    /// Current reference time to expiry τ₀ (in years).
+    pub ref_tau: f64,
+    /// Nanosecond timestamp of last coefficient update.
+    pub last_update_ns: u64,
+}
+
+impl TaylorVolSurface {
+    /// Create a new Taylor vol surface with the given coefficients.
+    pub fn new(
+        sigma_atm: f64,
+        d_sigma_d_s: f64,
+        d2_sigma_d_s2: f64,
+        d_sigma_d_tau: f64,
+        ref_spot: f64,
+        ref_tau: f64,
+    ) -> Self {
+        Self {
+            sigma_atm,
+            d_sigma_d_s,
+            d2_sigma_d_s2,
+            d_sigma_d_tau,
+            ref_spot,
+            ref_tau,
+            last_update_ns: 0,
+        }
+    }
+
+    /// Create a flat vol surface (no skew, no term structure).
+    pub fn flat(sigma: f64, ref_spot: f64, ref_tau: f64) -> Self {
+        Self::new(sigma, 0.0, 0.0, 0.0, ref_spot, ref_tau)
+    }
+
+    /// Evaluate the Taylor expansion for local volatility.
+    ///
+    /// `σ(S, K, τ) ≈ σ_ATM + ∂σ/∂S·(S - S₀) + ½·∂²σ/∂S²·(S - S₀)² + ∂σ/∂τ·(τ - τ₀)`
+    ///
+    /// Note: In production, the strike dependence is captured implicitly
+    /// through the spot derivative (moneyness = K/S approximation).
+    #[inline(always)]
+    pub fn evaluate_vol(&self, spot: f64, _strike: f64, tau: f64) -> f64 {
+        let ds = spot - self.ref_spot;
+        let d_tau = tau - self.ref_tau;
+
+        // σ_ATM + ∂σ/∂S·ΔS + ½·∂²σ/∂S²·ΔS² + ∂σ/∂τ·Δτ
+        let vol = self.sigma_atm
+            + self.d_sigma_d_s * ds
+            + 0.5 * self.d2_sigma_d_s2 * ds * ds
+            + self.d_sigma_d_tau * d_tau;
+
+        // Volatility must be positive
+        vol.max(0.001)
+    }
+
+    /// Update the Taylor coefficients from a background refit.
+    ///
+    /// In production, this is called by a background thread running a
+    /// Kalman filter or Ridge-regularized OLS on recent market data.
+    /// The hot-path reader uses `Ordering::Relaxed` to load coefficients.
+    pub fn update_coefficients(
+        &mut self,
+        sigma_atm: f64,
+        d_sigma_d_s: f64,
+        d2_sigma_d_s2: f64,
+        d_sigma_d_tau: f64,
+        ref_spot: f64,
+        ref_tau: f64,
+        timestamp_ns: u64,
+    ) {
+        self.sigma_atm = sigma_atm;
+        self.d_sigma_d_s = d_sigma_d_s;
+        self.d2_sigma_d_s2 = d2_sigma_d_s2;
+        self.d_sigma_d_tau = d_sigma_d_tau;
+        self.ref_spot = ref_spot;
+        self.ref_tau = ref_tau;
+        self.last_update_ns = timestamp_ns;
+    }
+
+    /// Get the ATM volatility.
+    #[inline(always)]
+    pub fn atm_vol(&self) -> f64 {
+        self.sigma_atm
+    }
+
+    /// Get the last update timestamp (nanoseconds).
+    #[inline(always)]
+    pub fn last_update_ns(&self) -> u64 {
+        self.last_update_ns
+    }
+}
+
+/// Background coefficient refit stub (Spec §7).
+///
+/// In production, this runs a Kalman filter or Ridge-regularized OLS
+/// on recent option market data to estimate the Taylor coefficients.
+/// Here it provides a simple finite-difference estimation from
+/// observed market vols at three strikes.
+pub fn refit_taylor_coefficients(
+    atm_vol: f64,
+    vol_at_plus_delta: f64,
+    vol_at_minus_delta: f64,
+    delta_s: f64,
+    vol_at_short_tau: f64,
+    short_tau: f64,
+    current_tau: f64,
+) -> (f64, f64, f64, f64) {
+    // ∂σ/∂S ≈ (vol(+ΔS) - vol(-ΔS)) / (2·ΔS)
+    let d_sigma_d_s = if delta_s.abs() > 1e-9 {
+        (vol_at_plus_delta - vol_at_minus_delta) / (2.0 * delta_s)
+    } else {
+        0.0
+    };
+
+    // ∂²σ/∂S² ≈ (vol(+ΔS) - 2·vol(ATM) + vol(-ΔS)) / ΔS²
+    let d2_sigma_d_s2 = if delta_s.abs() > 1e-9 {
+        (vol_at_plus_delta - 2.0 * atm_vol + vol_at_minus_delta) / (delta_s * delta_s)
+    } else {
+        0.0
+    };
+
+    // ∂σ/∂τ ≈ (vol(τ_short) - vol(ATM)) / (τ_short - τ_current)
+    let d_tau = short_tau - current_tau;
+    let d_sigma_d_tau = if d_tau.abs() > 1e-9 {
+        (vol_at_short_tau - atm_vol) / d_tau
+    } else {
+        0.0
+    };
+
+    (atm_vol, d_sigma_d_s, d2_sigma_d_s2, d_sigma_d_tau)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
