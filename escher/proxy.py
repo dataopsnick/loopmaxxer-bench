@@ -66,7 +66,7 @@ DEFAULT_STATE = {
     "require_parameters": False,
 }
 
-ALLOWED_BINARIES = {"git", "./ocr"}
+ALLOWED_BINARIES = {"git", "./ocr", "pnpm", "npx"}
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
 # Concurrency locks (defined once — proxy.py had these duplicated)
@@ -1170,6 +1170,7 @@ class CommandHandlers:
             (self._match_benchmark_market_making, self.handle_benchmark_market_making),
             (self._match_benchmark_escher, self.handle_benchmark_escher),
             (self._match_benchmark_selinux, self.handle_benchmark_selinux),
+            (self._match_benchmark_deepsec, self.handle_benchmark_deepsec),
         ]
         self._file_routes: list[tuple[Callable[[str], bool], Callable]] = [
             (self._match_cd, self.handle_cd),
@@ -1215,6 +1216,10 @@ class CommandHandlers:
     def _match_benchmark_selinux(self, command: str) -> bool:
         lower = command.lower()
         return lower.startswith("/benchmark selinux") or lower.startswith("benchmark selinux")
+    
+    def _match_benchmark_deepsec(self, command: str) -> bool:
+        lower = command.lower()
+        return lower.startswith("/benchmark deepsec") or lower.startswith("benchmark deepsec") or lower.startswith("/deepsec") or lower == "deepsec"
 
     def _match_cd(self, command: str) -> bool:
         stripped = command.strip()
@@ -2026,6 +2031,94 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
         )
         yield self._sse.done()
 
+    async def handle_benchmark_deepsec(self, command: str, state: dict):
+        """Runs deepsec vulnerability scan and analysis on the active workspace."""
+        yield self._sse.text("🛡️ **Starting Vercel Deepsec Vulnerability Scan...**\n")
+
+        # Check if .deepsec is already initialized
+        if not os.path.exists(".deepsec"):
+            yield self._sse.text("⚙️ **Step 1: Initializing deepsec workspace...**\n")
+            proc = await asyncio.create_subprocess_exec(
+                "npx", "deepsec", "init",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT
+            )
+            out, _ = await proc.communicate()
+            if proc.returncode != 0:
+                yield self._sse.text(f"❌ **npx deepsec init failed:** {out.decode('utf-8', errors='replace')}\n")
+                yield self._sse.done()
+                return
+            yield self._sse.text("✅ **deepsec workspace successfully initialized!**\n")
+
+            yield self._sse.text("📦 **Installing deepsec dependencies...**\n")
+            proc = await asyncio.create_subprocess_exec(
+                "pnpm", "install",
+                cwd=".deepsec",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT
+            )
+            out, _ = await proc.communicate()
+            if proc.returncode != 0:
+                yield self._sse.text(f"❌ **pnpm install failed:** {out.decode('utf-8', errors='replace')}\n")
+                yield self._sse.done()
+                return
+            yield self._sse.text("✅ **deepsec dependencies successfully installed!**\n")
+
+        # Step 2: Run deepsec scan
+        yield self._sse.text("🔍 **Step 2: Scanning codebase with regex matchers...**\n")
+        proc = await asyncio.create_subprocess_exec(
+            "pnpm", "deepsec", "scan",
+            cwd=".deepsec",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
+        while True:
+            line_bytes = await proc.stdout.readline()
+            if not line_bytes:
+                break
+            raw_line = line_bytes.decode('utf-8', errors='replace')
+            yield self._sse.text(f"  `{raw_line.strip()}`\n")
+        await proc.wait()
+        yield self._sse.text("✅ **Codebase scan completed!**\n")
+
+        # Step 3: Run deepsec process (AI investigation)
+        yield self._sse.text("🧠 **Step 3: Running AI investigation process...**\n")
+        proc = await asyncio.create_subprocess_exec(
+            "pnpm", "deepsec", "process",
+            cwd=".deepsec",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
+        while True:
+            line_bytes = await proc.stdout.readline()
+            if not line_bytes:
+                break
+            raw_line = line_bytes.decode('utf-8', errors='replace')
+            yield self._sse.text(f"  `{raw_line.strip()}`\n")
+        await proc.wait()
+
+        # Step 4: Export findings
+        yield self._sse.text("📥 **Step 4: Exporting security findings...**\n")
+        proc = await asyncio.create_subprocess_exec(
+            "pnpm", "deepsec", "export", "--format", "md-dir", "--out", "./findings",
+            cwd=".deepsec",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
+        out, _ = await proc.communicate()
+        yield self._sse.text("✅ **Security findings successfully exported to `.deepsec/findings`!**\n")
+        
+        findings_path = ".deepsec/findings"
+        if os.path.exists(findings_path) and os.path.isdir(findings_path):
+            files = os.listdir(findings_path)
+            if files:
+                yield self._sse.text("\n📋 **Exported Findings Files:**\n" + "\n".join([f"- `{f}`" for f in files]) + "\n")
+            else:
+                yield self._sse.text("ℹ️ No specific vulnerabilities were found during this run.\n")
+
+        yield self._sse.done()
+
+
     async def handle_cd(self, command: str, state: dict):
         """Change working directory within the workspace."""
         parts = command.strip().split(None, 1)
@@ -2226,6 +2319,8 @@ _BENCHMARK_PREFIXES = (
     "benchmark market-making", "/benchmark market-making",
     "/benchmark escher", "benchmark escher",
     "/benchmark selinux", "benchmark selinux",
+    "benchmark deepsec", "/benchmark deepsec",
+    "deepsec", "/deepsec",
 )
 
 

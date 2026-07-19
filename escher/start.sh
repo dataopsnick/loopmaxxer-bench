@@ -26,6 +26,17 @@ done
 echo "Ensuring Python Proxy dependencies are installed..."
 $HOME/venv/bin/pip install -q fastapi uvicorn httpx gitingest
 
+# 2.5 Initialize and install deepsec
+echo "Initializing and installing deepsec in the app workspace..."
+cd $HOME/app
+if [ ! -d ".deepsec" ]; then
+  npx deepsec init --yes || npx deepsec init
+fi
+cd .deepsec
+pnpm install
+cd $HOME/app
+
+
 # 3. Start and verify Python Proxy
 echo "Starting Local CLI-to-OpenAI Proxy..."
 $HOME/venv/bin/python3 -m uvicorn proxy:app --host 127.0.0.1 --port 8080 &
