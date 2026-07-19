@@ -44,6 +44,9 @@ RUN apt-get update && apt-get install -y \
     && apt-get update && apt-get install -y mongodb-org-server \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Install pnpm globally
+RUN npm install -g pnpm
+
 # Set up non-root user (UID 1011) for Hugging Face Spaces compatibility
 RUN mkdir -p /home/user/app && chown -R 1011:1011 /home/user
 RUN useradd -m -u 1011 user || true
@@ -64,6 +67,16 @@ COPY --from=chatui-builder --chown=1011:1011 /app $HOME/chat-ui
 # Use the clean, standardized local build context copier
 COPY --chown=1011:1011 . $HOME/app/
 RUN chmod +x $HOME/app/start.sh
+
+# Clone LocalStack Skills and copy the skills directory
+RUN git clone --depth 1 https://github.com/localstack/skills.git $HOME/localstack-skills && \
+    mkdir -p $HOME/app/skills && \
+    cp -r $HOME/localstack-skills/skills/* $HOME/app/skills/ && \
+    rm -rf $HOME/localstack-skills
+
+# Clone deepsec repository
+RUN git clone --depth 1 https://github.com/vercel-labs/deepsec.git $HOME/deepsec
+
 
 EXPOSE 7860
 
