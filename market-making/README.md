@@ -470,6 +470,124 @@ timestamp_ns,symbol,event_type,bid_price,bid_size,ask_price,ask_size,trade_price
 4. **Atomic ordering**: `Ordering::Relaxed` for hot-path reads, `Release/Acquire` for cross-thread publication, `SeqCst` only for kill-switch state
 5. **No new heavy dependencies**: Hand-rolled SBE encoder, FIX parser, QP solver
 
+## Execution Paradigms & Setup Options
+
+Depending on your local system resource constraints, development environment, and deployment targets, you can choose from four distinct execution paradigms:
+
+### Option A: Cloud Sandbox (Zero Local Storage Footprint)
+* **Best for:** Developers with constrained local disk space (e.g., < 5MB of free storage) or those looking for immediate, headless onboarding.
+* **Infrastructure:** GitHub Codespaces (runs on a secure, remote virtual machine).
+* **Configuration:** Handled automatically via `.devcontainer/` at the repository root.
+
+#### How to Launch:
+1. Go to your repository on GitHub.
+2. Click the green **Code** button, select the **Codespaces** tab, and click **Create codespace on main**.
+3. Once the terminal loads in your browser, run:
+   ```bash
+   cd market-making
+   # Run the integration test suite
+   cargo test --release
+   # Run the simulation against the sidecarred Redis container
+   cargo run --release -- run --symbol AAPL --n-events 1000 --memorydb-endpoint memorydb-emu
+   ```
+
+---
+
+### Option B: Local Containerized (Docker Compose)
+* **Best for:** Local environment isolation. Avoids installing Rust, Cargo, or system dependencies directly on your host operating system.
+* **Infrastructure:** Docker Desktop or local Docker engine.
+* **Configuration:** Managed via `Dockerfile.dev` and `docker-compose.yml`.
+
+#### How to Run:
+1. Start the workspace and local Redis (MemoryDB) services:
+   ```bash
+   docker compose up -d
+   ```
+2. Run the test suite inside the container:
+   ```bash
+   docker compose exec workspace cargo test --release
+   ```
+3. Run the simulation against the bridge-networked MemoryDB emulator:
+   ```bash
+   docker compose exec workspace cargo run --release -- run \
+     --symbol AAPL \
+     --n-events 1000 \
+     --memorydb-endpoint memorydb-emu
+   ```
+   *Cargo dependencies and build targets are cached on your host using Docker named volumes (`cargo-cache` and `target-cache`) to ensure subsequent builds compile rapidly.*
+
+---
+
+### Option C: Serverless / Cloud-Native (AWS SAM)
+* **Best for:** Testing code in a production-ready AWS Lambda execution environment.
+* **Infrastructure:** AWS SAM CLI + Docker (compiles inside a container, eliminating local Rust toolchain requirements).
+* **Configuration:** Managed via `template.yaml` using `PackageType: Image` and the `provided.al2023` custom runtime.
+
+#### How to Run:
+1. Start your local MemoryDB emulator:
+   ```bash
+   docker run -d --name local-memorydb -p 6379:6379 redis:alpine
+   ```
+2. Build the serverless container image:
+   ```bash
+   sam build
+   ```
+3. Invoke the local lambda function, mapping the host's Redis port into the SAM runtime:
+   ```bash
+   sam local invoke MarketMakerFunction \
+     --env-vars env.json \
+     --event <(echo '{"args": ["run", "--symbol", "AAPL", "--n-events", "500", "--memorydb-endpoint", "host.docker.internal"]}')
+   ```
+
+---
+
+### Option D: Bare Metal / Native (Local Toolchain)
+* **Best for:** Maximum raw performance, profiling, and sub-microsecond latency testing.
+* **Infrastructure:** Local terminal.
+* **Prerequisites:** Rust 1.80+ (stable), `pkg-config`, `libssl-dev`, and `build-essential`.
+
+#### How to Run:
+1. Ensure a local Redis server is running (simulating MemoryDB):
+   ```bash
+   redis-server --port 6379 &
+   ```
+2. Run unit and integration tests:
+   ```bash
+   cargo test --release
+   ```
+3. Execute the hot-path latency benchmarks:
+   ```bash
+   cargo bench --bench hot_path
+   ```
+4. Run the production-grade orchestrator:
+   ```bash
+   cargo run --release -- live --symbol AAPL --n-ticks 10000
+   ```
+
+---
+
+## Local Cloud Emulation Reference
+
+To avoid the overhead and cost of deploying live resources in AWS during development, this module supports several local emulation options:
+
+### 1. Redis Alpine (Port 6379)
+* **Role:** Emulates AWS MemoryDB/ElastiCache.
+* **Usage:** Used as the primary key-value store for storing order-flow and microstructure feature vectors. Run headlessly in-memory for optimal execution speed:
+  ```bash
+  docker run -d -p 6379:6379 redis:alpine redis-server --save "" --appendonly no
+  ```
+
+### 2. floci (Port 4566)
+* **Role:** A lightweight, native AWS emulator.
+* **Usage:** Built with Quarkus Native, it serves as a lightweight alternative to LocalStack, supporting S3, SQS, SNS, and DynamoDB on port 4566 with a 24ms startup time and a 13MB idle memory footprint. Ideal for continuous integration testing without internet access or SaaS tokens:
+  ```bash
+  docker run -d -p 4566:4566 floci/floci:latest
+  ```
+
+### 3. LocalStack (Port 4566)
+* **Role:** Standard AWS emulation.
+* **Usage:** Serves as a heavier, feature-complete alternative to floci if full AWS API parity is required.
+
 ## License
 
 This project is for research and educational purposes.

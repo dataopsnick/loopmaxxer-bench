@@ -1,0 +1,21 @@
+FROM rust:1.80-slim
+
+# Install system utilities required for compilation, networking, and profiling
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    clang \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install cargo-binstall to speed up tool compilation in the container
+RUN curl -LsSf https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /usr/local/bin
+
+# Pre-install cargo-nextest for faster, concurrent test execution
+RUN cargo-binstall -y cargo-nextest
+
+WORKDIR /workspace
+
+# Keep the container alive for execution commands
+CMD ["sleep", "infinity"]
