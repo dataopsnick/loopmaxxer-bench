@@ -197,7 +197,7 @@ impl HedgingRoutingMatrix {
                 + carry[i] * h[i].abs();
         }
 
-        let residual: f64 = h.iter().zip(weights.iter()).map(|(hi, w)| hi * w).sum() + imbalance;
+        let residual: f64 = h.iter().zip(weights.iter()).map(|(hi, w)| hi * w).sum::<f64>() + imbalance;
 
         HedgeAllocation {
             quantities: h,
