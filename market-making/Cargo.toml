@@ -20,6 +20,10 @@ rayon = "1.10"
 libc = "0.2"
 core_affinity = "0.8"
 
+[lib]
+name = "mr_market"
+path = "src/main.rs"
+
 [dev-dependencies]
 criterion = "0.5"
 
