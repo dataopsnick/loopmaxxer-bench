@@ -47,7 +47,7 @@ impl MlePositionInferer {
             .likelihood
             .likelihood_curve(gmm, features, self.q_min, self.q_max, self.n_grid);
 
-        let (best_q, best_ll) = curve
+        let (best_q, _best_ll) = curve
             .iter()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .copied()

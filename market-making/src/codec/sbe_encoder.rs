@@ -292,11 +292,15 @@ mod tests {
     fn sbe_encoder_produces_nos() {
         let encoder = SbeEncoder::new();
         let nos = encoder.encode_new_order_single(1, "AAPL", 1, 100, 150.0, 1000);
-        assert_eq!(nos.header.template_id, 1);
-        assert_eq!(nos.client_order_id, 1);
+        let template_id = nos.header.template_id;
+        let client_order_id = nos.client_order_id;
+        let order_qty = nos.order_qty;
+        let price = nos.price;
+        assert_eq!(template_id, 1);
+        assert_eq!(client_order_id, 1);
         assert_eq!(&nos.symbol[..4], b"AAPL");
         assert_eq!(nos.side, 1);
-        assert_eq!(nos.order_qty, 100);
-        assert_eq!(nos.price, 1500000); // 150.0 * 10000
+        assert_eq!(order_qty, 100);
+        assert_eq!(price, 1500000); // 150.0 * 10000
     }
 }

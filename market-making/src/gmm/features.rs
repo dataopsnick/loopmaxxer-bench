@@ -45,7 +45,7 @@ impl OrderFlowFeatures {
                 bid_size,
                 ask_price,
                 ask_size,
-                timestamp_ns,
+                timestamp_ns: _,
             } => {
                 if symbol != &self.symbol {
                     return None;

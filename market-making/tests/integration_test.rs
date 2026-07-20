@@ -194,7 +194,10 @@ fn orchestrator_nos_encoding_full() {
 
     let nos = orch.encode_nos_for_quote(42, "AAPL", 1, 200, 150.50, 1234567890);
 
-    assert_eq!(nos.client_order_id, 42);
+    let client_order_id = nos.client_order_id;
+    let order_qty = nos.order_qty;
+    let price = nos.price;
+    assert_eq!(client_order_id, 42);
     assert_eq!(&nos.symbol[..4], b"AAPL");
     assert_eq!(nos.side, 1);
     assert_eq!(nos.order_qty, 200);

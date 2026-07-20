@@ -6,7 +6,7 @@
 
 use crossbeam_queue::ArrayQueue;
 
-use crate::ingestion::dma_buffer::{DmaBufferPool, DmaFrameBuffer};
+use crate::ingestion::dma_buffer::DmaBufferPool;
 use crate::ingestion::numa::{pin_thread_by_role, NumaConfig, ThreadRole};
 use crate::ingestion::spider_stream::{SpiderStreamHeader, StockBookQuoteBody};
 

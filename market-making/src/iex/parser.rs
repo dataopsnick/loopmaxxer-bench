@@ -23,7 +23,7 @@ const PCAP_MAGIC_SWAPPED: u32 = 0xD4C3B2A1;
 
 /// IEX PCAP file parser.
 pub struct IexPcapParser {
-    is_swapped: bool,
+    _is_swapped: bool,
 }
 
 impl IexPcapParser {

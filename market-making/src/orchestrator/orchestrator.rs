@@ -441,10 +441,12 @@ mod tests {
         let orch = ActiveOrchestrator::new(config);
 
         let nos = orch.encode_nos_for_quote(1, "AAPL", 1, 100, 150.25, 1000);
-        assert_eq!(nos.client_order_id, 1);
+        let client_order_id = nos.client_order_id;
+        let order_qty = nos.order_qty;
+        assert_eq!(client_order_id, 1);
         assert_eq!(&nos.symbol[..4], b"AAPL");
         assert_eq!(nos.side, 1);
-        assert_eq!(nos.order_qty, 100);
+        assert_eq!(order_qty, 100);
     }
 
     #[test]
@@ -482,7 +484,7 @@ mod tests {
     #[test]
     fn orchestrator_start_stop() {
         let config = OrchestratorConfig::default();
-        let mut orch = ActiveOrchestrator::new(config);
+        let orch = ActiveOrchestrator::new(config);
 
         // We can't easily test the blocking run() loop in a unit test,
         // but we can test start/stop state transitions.

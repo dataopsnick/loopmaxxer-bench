@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn tick_option_detection() {
         let key = PackedAssetKey::new_option(sources::NMS, "AAPL", 30, 15000, true);
-        let tick = LiveMarketTick::new_option(key, 150.0, 150.0, 0.25, 5.0, 10, 5.1, 10, 1000);
+        let tick = LiveMarketTick::new_option(key, 150.0, 150.0, 0.25, 5.0, 10.0, 5.1, 10.0, 1000);
         assert!(tick.is_option());
         assert!((tick.strike - 150.0).abs() < 1e-9);
     }

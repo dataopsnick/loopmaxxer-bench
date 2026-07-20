@@ -119,7 +119,7 @@ impl SOFRHedgeController {
         mid_price: f64,
         position: f64,
         volatility: f64,
-        spot_price: f64,
+        _spot_price: f64,
         time_to_horizon: f64,
         margin_haircut: f64,
         borrow_premium: f64,
