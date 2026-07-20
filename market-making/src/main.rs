@@ -5,39 +5,16 @@
 //!
 //! Based on the Korean Order Book Specification (korean-order-book-spec.md).
 
-mod bookmaker;
-mod clearing;
-mod codec;
-mod dropcopy;
-mod gmm;
-mod hedging;
-mod iex;
-mod ingestion;
-mod margin;
-mod memorydb;
-mod mle;
-mod ofi;
-mod orchestrator;
-mod portfolio;
-mod pricer;
-mod purge;
-mod recorder;
-mod risk_gate;
-mod simulation;
-mod sofr;
-mod symbology;
-mod term_structure;
-mod vol_surface;
-
 use clap::{Parser, Subcommand};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::gmm::em::EmConfig;
-use crate::iex::downloader::{IexDownloader, IexFeed};
-use crate::memorydb::vector_store::VectorStore;
-use crate::memorydb::MemoryDbConfig;
-use crate::simulation::{MrMarketSimulation, SimulationConfig};
+use mr_market::gmm::em::EmConfig;
+use mr_market::iex::downloader::{IexDownloader, IexFeed};
+use mr_market::memorydb::vector_store::VectorStore;
+use mr_market::memorydb::MemoryDbConfig;
+use mr_market::simulation::{MrMarketSimulation, SimulationConfig};
+use mr_market::simulation;
 
 /// Mr. Market — Simulated bookmaking operation with GMM hidden-state MLE position inference.
 #[derive(Parser, Debug)]
@@ -378,9 +355,9 @@ struct LiveArgs {
 /// On Linux with EF_VI, this enters a NUMA-pinned busy-poll loop reading
 /// from the NIC. On macOS, it processes synthetic ticks for development.
 fn run_live_orchestrator(args: LiveArgs) {
-    use crate::bookmaker::BookmakerConfig;
-    use crate::orchestrator::{ActiveOrchestrator, LiveMarketTick, OrchestratorConfig};
-    use crate::symbology::{sources, PackedAssetKey};
+    use mr_market::bookmaker::BookmakerConfig;
+    use mr_market::orchestrator::{ActiveOrchestrator, LiveMarketTick, OrchestratorConfig};
+    use mr_market::symbology::{sources, PackedAssetKey};
 
     info!("Starting live orchestrator for {}", args.symbol);
 
