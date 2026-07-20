@@ -496,7 +496,10 @@ async fn run_simulation(args: SimulationArgs) {
         };
         let mut store = VectorStore::memorydb(mdb_config);
         match store.connect().await {
-            Ok(_) => info!("Connected to MemoryDB"),
+            Ok(_) => {
+                info!("Connected to MemoryDB");
+                store
+            }
             Err(e) => {
                 warn!("Failed to connect to MemoryDB: {}, falling back to in-memory", e);
                 VectorStore::in_memory()

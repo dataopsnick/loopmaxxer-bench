@@ -42,7 +42,7 @@ impl MemoryDbClient {
         info!("Connecting to MemoryDB: {}", self.config.endpoint);
 
         let client =
-            redis::Client::open(&url).map_err(|e| format!("Failed to create Redis client: {}", e))?;
+            redis::Client::open(url).map_err(|e| format!("Failed to create Redis client: {}", e))?;
 
         let conn = ConnectionManager::new(client)
             .await
@@ -217,9 +217,9 @@ impl MemoryDbClient {
 
 /// In-memory fallback store for when MemoryDB is not available.
 pub struct InMemoryStore {
-    features: std::collections::HashMap<(String, u64), Vec<f64>>,
-    timeline: std::collections::HashMap<String, Vec<(u64, Vec<f64>)>>,
-    gmm_params: std::collections::HashMap<String, String>,
+    pub features: std::collections::HashMap<(String, u64), Vec<f64>>,
+    pub timeline: std::collections::HashMap<String, Vec<(u64, Vec<f64>)>>,
+    pub gmm_params: std::collections::HashMap<String, String>,
 }
 
 impl InMemoryStore {

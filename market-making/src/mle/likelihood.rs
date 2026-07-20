@@ -1,11 +1,59 @@
- 
-//! Position Likelihood Construction //! //! Constructs the log-likelihood function for the delta-neutral market maker's //! position size q, incorporating: //! - Spread revenue (from noise-trader fills) //! - Adverse selection cost (from informed-trader flow) //! - SOFR carry cost (from holding inventory overnight)
-use crate::gmm::model::GmmModel; use crate::memorydb::vector_store::FeatureVector; use crate::sofr::SOFRHedgeController;
-/// Parameters for the position likelihood function. #[derive(Debug, Clone)] pub struct LikelihoodParams { pub spot_price: f64, pub sofr_rate: f64, pub margin_haircut: f64, pub borrow_premium: f64, pub liquidity_kappa: f64, pub risk_aversion_gamma: f64, pub time_to_horizon: f64, pub half_spread: f64, }
-impl Default for LikelihoodParams { fn default() -> Self { Self { spot_price: 150.0, sofr_rate: 0.0535, margin_haircut: 0.15, borrow_premium: 0.0025, liquidity_kappa: 2.1, risk_aversion_gamma: 0.015, time_to_horizon: 0.45, half_spread: 0.01, } } }
-/// Position likelihood evaluator. /// /// L(q) = E[spread_revenue(q)] - E[adverse_selection(q)] - Φ_SOFR(q) pub struct PositionLikelihood { params: LikelihoodParams, sofr_controller: SOFRHedgeController, }
-impl PositionLikelihood { pub fn new(params: LikelihoodParams) -> Self { let sofr_controller = SOFRHedgeController::new(params.risk_aversion_gamma, params.sofr_rate); Self { params, sofr_controller, } }
-/// Get the likelihood parameters.
+ //! Position Likelihood Construction
+//!
+//! Constructs the log-likelihood function for the delta-neutral market maker's
+//! position size q, incorporating:
+//! - Spread revenue (from noise-trader fills)
+//! - Adverse selection cost (from informed-trader flow)
+//! - SOFR carry cost (from holding inventory overnight)
+
+use crate::gmm::model::GmmModel;
+use crate::memorydb::vector_store::FeatureVector;
+use crate::sofr::SOFRHedgeController;
+
+/// Parameters for the position likelihood function.
+#[derive(Debug, Clone)]
+pub struct LikelihoodParams {
+    pub spot_price: f64,
+    pub sofr_rate: f64,
+    pub margin_haircut: f64,
+    pub borrow_premium: f64,
+    pub liquidity_kappa: f64,
+    pub risk_aversion_gamma: f64,
+    pub time_to_horizon: f64,
+    pub half_spread: f64,
+}
+
+impl Default for LikelihoodParams {
+    fn default() -> Self {
+        Self {
+            spot_price: 150.0,
+            sofr_rate: 0.0535,
+            margin_haircut: 0.15,
+            borrow_premium: 0.0025,
+            liquidity_kappa: 2.1,
+            risk_aversion_gamma: 0.015,
+            time_to_horizon: 0.45,
+            half_spread: 0.01,
+        }
+    }
+}
+
+/// Position likelihood evaluator.
+///
+/// L(q) = E[spread_revenue(q)] - E[adverse_selection(q)] - Φ_SOFR(q)
+pub struct PositionLikelihood {
+    params: LikelihoodParams,
+    sofr_controller: SOFRHedgeController,
+}
+
+impl PositionLikelihood {
+    pub fn new(params: LikelihoodParams) -> Self {
+        let sofr_controller = SOFRHedgeController::new(params.risk_aversion_gamma, params.sofr_rate);
+        Self {
+            params,
+            sofr_controller,
+        }
+    }
 pub fn params(&self) -> &LikelihoodParams {
     &self.params
 }

@@ -81,8 +81,8 @@ pub struct PositionNettingResult {
 /// strikes/expirations, and compresses offsetting positions to
 /// minimize clearing margin.
 pub struct CmtaClearingEngine {
-    /// Current positions keyed by (symbol, strike, expiration, is_call).
-    positions: HashMap<(String, f64, u32, bool), OptionPosition>,
+    /// Current positions keyed by (symbol, strike as bits, expiration, is_call).
+    positions: HashMap<(String, u64, u32, bool), OptionPosition>,
     /// Total margin estimate before netting.
     gross_margin: f64,
     /// Total margin estimate after netting.
@@ -106,7 +106,7 @@ impl CmtaClearingEngine {
     pub fn add_position(&mut self, pos: OptionPosition) {
         let key = (
             pos.symbol.clone(),
-            pos.strike,
+            pos.strike.to_bits(),
             pos.expiration,
             pos.is_call,
         );
@@ -238,15 +238,15 @@ impl CmtaClearingEngine {
     pub fn compress_cross_expiration(&mut self) -> PositionNettingResult {
         let positions_before = self.positions.len();
 
-        // Group by (symbol, strike, is_call) across expirations
-        let mut groups: HashMap<(String, f64, bool), Vec<OptionPosition>> = HashMap::new();
+        // Group by (symbol, strike as bits, is_call) across expirations
+        let mut groups: HashMap<(String, u64, bool), Vec<OptionPosition>> = HashMap::new();
 
         for pos in self.positions.values() {
             if pos.quantity == 0 {
                 continue;
             }
             groups
-                .entry((pos.symbol.clone(), pos.strike, pos.is_call))
+                .entry((pos.symbol.clone(), pos.strike.to_bits(), pos.is_call))
                 .or_default()
                 .push(pos.clone());
         }

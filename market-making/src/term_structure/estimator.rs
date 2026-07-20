@@ -68,8 +68,8 @@ impl TermStructureBetaEstimator {
         let mut cov_bits = self.covariance_accumulator.load(Ordering::Relaxed);
         let mut var_bits = self.variance_accumulator.load(Ordering::Relaxed);
 
-        let next_cov;
-        let next_var;
+        let mut next_cov;
+        let mut next_var;
 
         loop {
             let prev_cov = f64::from_bits(cov_bits);

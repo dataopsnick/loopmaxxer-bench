@@ -5,6 +5,7 @@
 //! ExecutionReport (MsgType=8) messages, and updates the atomic
 //! portfolio state via lock-free CAS within <5µs of fill.
 
+use std::io::Read;
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
