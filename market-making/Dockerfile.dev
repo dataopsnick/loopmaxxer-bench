@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y \
 RUN curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
 # Pre-install cargo-nextest for faster, concurrent test execution
-RUN cargo-binstall -y cargo-nextest
+RUN curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C /usr/local/cargo/bin
 
 WORKDIR /workspace
 
