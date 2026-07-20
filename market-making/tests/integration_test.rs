@@ -5,16 +5,11 @@
 //! ingestion through quote generation, risk gate validation, NOS
 //! encoding, and hedge evaluation.
 
-use mr_market::bookmaker::{BookmakerConfig, KappaEstimator};
-use mr_market::codec::sbe_encoder::SbeEncoder;
+use mr_market::bookmaker::BookmakerConfig;
 use mr_market::hedging::router::HedgingRoutingMatrix;
 use mr_market::ofi::MicrostructureOFI;
-use mr_market::orchestrator::{
-    ActiveOrchestrator, LiveMarketTick, OrchestratorConfig, TICK_QUEUE_CAPACITY,
-};
+use mr_market::orchestrator::{ActiveOrchestrator, LiveMarketTick, OrchestratorConfig, TICK_QUEUE_CAPACITY,};
 use mr_market::portfolio::AtomicPortfolioState;
-use mr_market::risk_gate::PreTradeRiskGate;
-use mr_market::sofr::{AssetHedgeParameters, SOFRHedgeController};
 use mr_market::symbology::{sources, PackedAssetKey};
 use mr_market::vol_surface::TaylorVolSurface;
 
@@ -200,8 +195,8 @@ fn orchestrator_nos_encoding_full() {
     assert_eq!(client_order_id, 42);
     assert_eq!(&nos.symbol[..4], b"AAPL");
     assert_eq!(nos.side, 1);
-    assert_eq!(nos.order_qty, 200);
-    assert_eq!(nos.price, 1505000); // 150.50 * 10000
+    assert_eq!(order_qty, 200);
+    assert_eq!(price, 1505000); // 150.50 * 10000
 
     // Verify the NOS can be serialized to bytes
     let bytes = nos.as_bytes();

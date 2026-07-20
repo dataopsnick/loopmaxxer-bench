@@ -6,7 +6,7 @@
 use super::MemoryDbConfig;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
-use tracing::{error, info, warn};
+use tracing::info;
 
 /// MemoryDB / Redis client for time-series feature storage.
 pub struct MemoryDbClient {

@@ -34,21 +34,21 @@ pub mod nos_offsets {
     /// Start of BodyLength "9=" + 8-byte slot + SOH
     pub const BODY_LENGTH: usize = 10;
     /// Start of MsgType "35=D" + SOH
-    pub const MSG_TYPE: usize = 19;
+    pub const MSG_TYPE: usize = 21;
     /// Start of ClOrdID "11=" + 24-byte window + SOH
-    pub const CL_ORD_ID: usize = 25;
+    pub const CL_ORD_ID: usize = 26;
     /// Start of HandlInst "21=2" + SOH
-    pub const HANDL_INST: usize = 50;
+    pub const HANDL_INST: usize = 54;
     /// Start of OrderQty "38=" + 12-byte slot + SOH
-    pub const ORDER_QTY: usize = 55;
+    pub const ORDER_QTY: usize = 59;
     /// Start of OrdType "40=2" + SOH
-    pub const ORD_TYPE: usize = 68;
+    pub const ORD_TYPE: usize = 75;
     /// Start of Price "44=" + 16-byte slot + SOH
-    pub const PRICE: usize = 73;
+    pub const PRICE: usize = 80;
     /// Start of Side "54=" + 1 byte + SOH
-    pub const SIDE: usize = 90;
+    pub const SIDE: usize = 100;
     /// Start of CheckSum "10=" + 3 bytes + SOH
-    pub const CHECK_SUM: usize = 94;
+    pub const CHECK_SUM: usize = 105;
 }
 
 /// A pre-allocated fixed-buffer FIX 4.4 message template.

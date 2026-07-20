@@ -10,4 +10,4 @@ pub mod live_tick;
 pub mod orchestrator;
 
 pub use live_tick::LiveMarketTick;
-pub use orchestrator::{ActiveOrchestrator, OrchestratorConfig, OrchestratorStats};
+pub use orchestrator::{ActiveOrchestrator, OrchestratorConfig, OrchestratorStats, TICK_QUEUE_CAPACITY};
