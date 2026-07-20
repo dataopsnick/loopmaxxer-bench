@@ -5,6 +5,8 @@
 //!
 //! Based on the Korean Order Book Specification (korean-order-book-spec.md).
 
+#![allow(dead_code)]
+
 use clap::{Parser, Subcommand};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
