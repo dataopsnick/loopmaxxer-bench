@@ -2039,7 +2039,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
         if not os.path.exists(".deepsec"):
             yield self._sse.text("⚙️ **Step 1: Initializing deepsec workspace...**\n")
             proc = await asyncio.create_subprocess_exec(
-                "npx", "deepsec", "init",
+                "npx", "-y", "deepsec", "init",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT
             )
@@ -2052,7 +2052,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
 
             yield self._sse.text("📦 **Installing deepsec dependencies...**\n")
             proc = await asyncio.create_subprocess_exec(
-                "pnpm", "install",
+                "npx", "-y", "pnpm", "install",
                 cwd=".deepsec",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT
@@ -2084,7 +2084,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
         # Step 3: Run deepsec process (AI investigation)
         yield self._sse.text("🧠 **Step 3: Running AI investigation process...**\n")
         proc = await asyncio.create_subprocess_exec(
-            "pnpm", "deepsec", "process",
+            "npx", "-y", "pnpm", "deepsec", "process",
             cwd=".deepsec",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT
@@ -2100,7 +2100,7 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
         # Step 4: Export findings
         yield self._sse.text("📥 **Step 4: Exporting security findings...**\n")
         proc = await asyncio.create_subprocess_exec(
-            "pnpm", "deepsec", "export", "--format", "md-dir", "--out", "./findings",
+            "npx", "-y", "pnpm", "deepsec", "export", "--format", "md-dir", "--out", "./findings",
             cwd=".deepsec",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT
