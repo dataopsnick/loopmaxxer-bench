@@ -482,16 +482,20 @@ def walk_repository_structure_and_ast(directory_path):
 # Git Issue Creation
 # ============================================================================
 
-def create_local_git_issues():
+def create_local_git_issues(cwd="."):
     """Parse TASKLIST.md XML and create local git issue files."""
     try:
-        if not os.path.exists("TASKLIST.md"):
-            return 0, "TASKLIST.md not found."
+        active_cwd_abs = get_secure_path(cwd)
+        tasklist_path = os.path.join(active_cwd_abs, "TASKLIST.md")
+        issues_dir = os.path.join(active_cwd_abs, "issues")
 
-        tree = ET.parse("TASKLIST.md")
+        if not os.path.exists(tasklist_path):
+            return 0, f"TASKLIST.md not found in {cwd}."
+
+        tree = ET.parse(tasklist_path)
         root = tree.getroot()
 
-        os.makedirs("issues", exist_ok=True)
+        os.makedirs(issues_dir, exist_ok=True)
         created_files = []
 
         for task in root.findall("task"):
@@ -502,7 +506,7 @@ def create_local_git_issues():
             desc = desc_node.text if desc_node is not None else ""
 
             safe_title = re.sub(r'[^a-zA-Z0-9_-]', '_', title)[:50]
-            filename = f"issues/task_{task_id}_{safe_title}.md"
+            filename = os.path.join(issues_dir, f"task_{task_id}_{safe_title}.md")
 
             with open(filename, "w", encoding="utf-8") as f:
                 f.write(f"# Task {task_id}: {title}\n\n")
@@ -512,9 +516,11 @@ def create_local_git_issues():
         if not created_files:
             return 0, "No tasks found inside TASKLIST.md."
 
-        subprocess.run(["git", "add", "issues/"], check=True)
+        repo_dir = active_cwd_abs if os.path.exists(os.path.join(active_cwd_abs, ".git")) else WORKSPACE_ROOT
+
+        subprocess.run(["git", "-C", repo_dir, "add", issues_dir], check=True)
         subprocess.run([
-            "git",
+            "git", "-C", repo_dir,
             "-c", "user.name=OCR Space Bot",
             "-c", "user.email=bot@opencodereview.local",
             "commit",
@@ -1175,6 +1181,12 @@ class CommandHandlers:
         self._file_routes: list[tuple[Callable[[str], bool], Callable]] = [
             (self._match_cd, self.handle_cd),
             (self._match_ls, self.handle_ls),
+            (self._match_write, self.handle_write),
+            (self._match_touch, self.handle_touch),
+            (self._match_cp, self.handle_cp),
+            (self._match_mv, self.handle_mv),
+            (self._match_grep, self.handle_grep),
+            (self._match_sed, self.handle_sed),
         ]
 
     def find_special_handler(self, command: str) -> Optional[Callable]:
@@ -1221,6 +1233,10 @@ class CommandHandlers:
         lower = command.lower()
         return lower.startswith("/benchmark deepsec") or lower.startswith("benchmark deepsec") or lower.startswith("/deepsec") or lower == "deepsec"
 
+    def _match_write(self, command: str) -> bool:
+        stripped = command.strip()
+        return stripped.startswith("write ") or stripped.startswith("cat > ")
+
     def _match_cd(self, command: str) -> bool:
         stripped = command.strip()
         return stripped.startswith("cd ") or stripped == "cd" or stripped.startswith("cd\t")
@@ -1228,6 +1244,32 @@ class CommandHandlers:
     def _match_ls(self, command: str) -> bool:
         stripped = command.strip()
         return stripped.startswith("ls ") or stripped == "ls" or stripped.startswith("ls\t")
+
+    def _match_touch(self, command: str) -> bool:
+        stripped = command.strip()
+        return stripped.startswith("touch ") or stripped == "touch" or stripped.startswith("touch\t")
+
+    def _match_cp(self, command: str) -> bool:
+        stripped = command.strip()
+        return (
+            stripped.startswith("cp ") or stripped == "cp" or stripped.startswith("cp\t") or
+            stripped.startswith("copy ") or stripped == "copy" or stripped.startswith("copy\t")
+        )
+
+    def _match_mv(self, command: str) -> bool:
+        stripped = command.strip()
+        return (
+            stripped.startswith("mv ") or stripped == "mv" or stripped.startswith("mv\t") or
+            stripped.startswith("move ") or stripped == "move" or stripped.startswith("move\t")
+        )
+
+    def _match_grep(self, command: str) -> bool:
+        stripped = command.strip()
+        return stripped.startswith("grep ") or stripped == "grep" or stripped.startswith("grep\t")
+
+    def _match_sed(self, command: str) -> bool:
+        stripped = command.strip()
+        return stripped.startswith("sed ") or stripped == "sed" or stripped.startswith("sed\t")
 
     # --- Handlers ---
 
@@ -1257,14 +1299,18 @@ class CommandHandlers:
 
     async def handle_create_issues(self, command: str, state: dict):
         """Parse TASKLIST.md and write local issue files."""
-        if not os.path.exists("TASKLIST.md"):
+        cwd = state.get("cwd", ".")
+        active_cwd_abs = get_secure_path(cwd)
+        tasklist_path = os.path.join(active_cwd_abs, "TASKLIST.md")
+
+        if not os.path.exists(tasklist_path):
             yield self._sse.text("⚠️ **TASKLIST.md not found.** Please run a review first using `scan` or `review`.")
             yield self._sse.done()
             return
 
         yield self._sse.text("🛠️ **Parsing TASKLIST.md and writing local issue files...**\n")
 
-        count, error = create_local_git_issues()
+        count, error = create_local_git_issues(cwd=cwd)
         if error:
             yield self._sse.text(f"❌ **Failed to generate issues:** {error}")
         else:
@@ -1273,6 +1319,41 @@ class CommandHandlers:
                 f"All tasks have been committed to your current git branch under the `./issues/` directory.\n"
                 f"Multi-agent frameworks can now read these task files directly from this repository."
             )
+
+        yield self._sse.done()
+
+    async def handle_write(self, command: str, state: dict):
+        """Write multiline content to a file safely within the workspace."""
+        # Split the first line (command + filename) from the rest (content)
+        parts = command.strip().split('\n', 1)
+        first_line = parts[0].strip()
+        content = parts[1] if len(parts) > 1 else ""
+
+        # Extract the filename
+        if first_line.startswith("cat > "):
+            target = first_line[6:].strip()
+        else:
+            target = first_line[6:].strip()
+
+        if not target:
+            yield self._sse.text("⚠️ **Usage:** `write <filename>` or `cat > <filename>` (followed by a newline and content)\n")
+            yield self._sse.done()
+            return
+
+        current_cwd = state.get("cwd", ".")
+        combined = os.path.join(current_cwd, target)
+
+        try:
+            target_abs = get_secure_path(combined)
+            with open(target_abs, "w", encoding="utf-8") as f:
+                f.write(content)
+
+            file_rel = os.path.relpath(target_abs, WORKSPACE_ROOT)
+            yield self._sse.text(f"✅ **Successfully wrote {len(content)} characters to:** `{file_rel}`\n")
+        except PermissionError as e:
+            yield self._sse.text(f"❌ **Security Error:** {e}\n")
+        except Exception as e:
+            yield self._sse.text(f"❌ **Error:** {e}\n")
 
         yield self._sse.done()
 
@@ -2181,6 +2262,327 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
             yield self._sse.text(f"❌ **Error:** {e}\n")
         yield self._sse.done()
 
+    async def handle_touch(self, command: str, state: dict):
+        """Create new empty files or update modification/access timestamps safely within workspace."""
+        try:
+            args = shlex.split(command)
+        except Exception:
+            args = command.strip().split()
+
+        targets = [arg for arg in args[1:] if not arg.startswith("-")]
+
+        if not targets:
+            yield self._sse.text("⚠️ **Usage:** `touch <file1> [file2 ...]`\n")
+            yield self._sse.done()
+            return
+
+        current_cwd = state.get("cwd", ".")
+
+        for target in targets:
+            combined = os.path.join(current_cwd, target)
+            try:
+                target_abs = get_secure_path(combined)
+                file_exists = os.path.exists(target_abs)
+
+                os.makedirs(os.path.dirname(target_abs), exist_ok=True)
+                with open(target_abs, 'a', encoding='utf-8'):
+                    pass
+                os.utime(target_abs, None)
+
+                file_rel = os.path.relpath(target_abs, WORKSPACE_ROOT)
+                if file_exists:
+                    yield self._sse.text(f"✅ **Updated timestamp on:** `{file_rel}`\n")
+                else:
+                    yield self._sse.text(f"✅ **Created file:** `{file_rel}`\n")
+            except PermissionError as e:
+                yield self._sse.text(f"❌ **Security Error ({target}):** {e}\n")
+            except Exception as e:
+                yield self._sse.text(f"❌ **Error ({target}):** {e}\n")
+
+        yield self._sse.done()
+
+    async def handle_cp(self, command: str, state: dict):
+        """Copy files or directories recursively within workspace."""
+        try:
+            args = shlex.split(command)
+        except Exception:
+            args = command.strip().split()
+
+        targets = [arg for arg in args[1:] if not arg.startswith("-")]
+
+        if len(targets) < 2:
+            yield self._sse.text("⚠️ **Usage:** `cp [-r] <src> <dst>` or `copy <src> <dst>`\n")
+            yield self._sse.done()
+            return
+
+        src_target = targets[0]
+        dst_target = targets[1]
+        current_cwd = state.get("cwd", ".")
+
+        try:
+            src_abs = get_secure_path(os.path.join(current_cwd, src_target))
+            dst_abs = get_secure_path(os.path.join(current_cwd, dst_target))
+
+            if not os.path.exists(src_abs):
+                yield self._sse.text(f"❌ **Error:** Source `{src_target}` does not exist.\n")
+                yield self._sse.done()
+                return
+
+            if os.path.isdir(src_abs):
+                if os.path.exists(dst_abs) and os.path.isdir(dst_abs):
+                    final_dst = get_secure_path(os.path.join(dst_abs, os.path.basename(src_abs)))
+                else:
+                    final_dst = dst_abs
+                shutil.copytree(src_abs, final_dst, dirs_exist_ok=True)
+                src_rel = os.path.relpath(src_abs, WORKSPACE_ROOT)
+                dst_rel = os.path.relpath(final_dst, WORKSPACE_ROOT)
+                yield self._sse.text(f"✅ **Recursively copied directory:** `{src_rel}` ➔ `{dst_rel}`\n")
+            else:
+                if os.path.exists(dst_abs) and os.path.isdir(dst_abs):
+                    final_dst = get_secure_path(os.path.join(dst_abs, os.path.basename(src_abs)))
+                else:
+                    final_dst = dst_abs
+                    os.makedirs(os.path.dirname(final_dst), exist_ok=True)
+                shutil.copy2(src_abs, final_dst)
+                src_rel = os.path.relpath(src_abs, WORKSPACE_ROOT)
+                dst_rel = os.path.relpath(final_dst, WORKSPACE_ROOT)
+                yield self._sse.text(f"✅ **Copied file:** `{src_rel}` ➔ `{dst_rel}`\n")
+        except PermissionError as e:
+            yield self._sse.text(f"❌ **Security Error:** {e}\n")
+        except Exception as e:
+            yield self._sse.text(f"❌ **Error:** {e}\n")
+
+        yield self._sse.done()
+
+    async def handle_mv(self, command: str, state: dict):
+        """Move or rename files and directories safely within workspace."""
+        try:
+            args = shlex.split(command)
+        except Exception:
+            args = command.strip().split()
+
+        targets = [arg for arg in args[1:] if not arg.startswith("-")]
+
+        if len(targets) < 2:
+            yield self._sse.text("⚠️ **Usage:** `mv <src> <dst>` or `move <src> <dst>`\n")
+            yield self._sse.done()
+            return
+
+        src_target = targets[0]
+        dst_target = targets[1]
+        current_cwd = state.get("cwd", ".")
+
+        try:
+            src_abs = get_secure_path(os.path.join(current_cwd, src_target))
+            dst_abs = get_secure_path(os.path.join(current_cwd, dst_target))
+
+            if not os.path.exists(src_abs):
+                yield self._sse.text(f"❌ **Error:** Source `{src_target}` does not exist.\n")
+                yield self._sse.done()
+                return
+
+            if os.path.exists(dst_abs) and os.path.isdir(dst_abs):
+                final_dst = get_secure_path(os.path.join(dst_abs, os.path.basename(src_abs)))
+            else:
+                final_dst = dst_abs
+                os.makedirs(os.path.dirname(final_dst), exist_ok=True)
+
+            shutil.move(src_abs, final_dst)
+            src_rel = os.path.relpath(src_abs, WORKSPACE_ROOT)
+            dst_rel = os.path.relpath(final_dst, WORKSPACE_ROOT)
+            yield self._sse.text(f"✅ **Moved:** `{src_rel}` ➔ `{dst_rel}`\n")
+        except PermissionError as e:
+            yield self._sse.text(f"❌ **Security Error:** {e}\n")
+        except Exception as e:
+            yield self._sse.text(f"❌ **Error:** {e}\n")
+
+        yield self._sse.done()
+
+    async def handle_grep(self, command: str, state: dict):
+        """Search files using regex patterns natively within workspace."""
+        try:
+            args = shlex.split(command)
+        except Exception:
+            args = command.strip().split()
+
+        case_insensitive = False
+        line_numbers = False
+        recursive = False
+        invert_match = False
+        positionals = []
+
+        for arg in args[1:]:
+            if arg.startswith('-') and len(arg) > 1 and not arg.startswith('--'):
+                for char in arg[1:]:
+                    if char in ('i', 'I'): case_insensitive = True
+                    elif char in ('n', 'N'): line_numbers = True
+                    elif char in ('r', 'R'): recursive = True
+                    elif char in ('v', 'V'): invert_match = True
+            elif arg.startswith('--'):
+                if arg == '--ignore-case': case_insensitive = True
+                elif arg == '--line-number': line_numbers = True
+                elif arg == '--recursive': recursive = True
+                elif arg == '--invert-match': invert_match = True
+            else:
+                positionals.append(arg)
+
+        if not positionals:
+            yield self._sse.text("⚠️ **Usage:** `grep [-i] [-n] [-r] [-v] <pattern> [path ...]`\n")
+            yield self._sse.done()
+            return
+
+        pattern = positionals[0]
+        targets = positionals[1:] if len(positionals) > 1 else ["."]
+        current_cwd = state.get("cwd", ".")
+
+        re_flags = re.IGNORECASE if case_insensitive else 0
+        try:
+            compiled_re = re.compile(pattern, re_flags)
+        except re.error as e:
+            yield self._sse.text(f"❌ **Regex Error:** {e}\n")
+            yield self._sse.done()
+            return
+
+        matches_count = 0
+        max_matches = 1000
+        output_lines = []
+
+        files_to_search = []
+        for target in targets:
+            combined = os.path.join(current_cwd, target)
+            try:
+                target_abs = get_secure_path(combined)
+                if os.path.isdir(target_abs):
+                    for root, dirs, files in os.walk(target_abs):
+                        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('.git', 'node_modules', '__pycache__', '.venv', 'venv')]
+                        for f in sorted(files):
+                            if f.startswith('.'): continue
+                            files_to_search.append(os.path.join(root, f))
+                elif os.path.isfile(target_abs):
+                    files_to_search.append(target_abs)
+            except Exception:
+                pass
+
+        for file_abs in files_to_search:
+            if matches_count >= max_matches:
+                break
+            try:
+                with open(file_abs, 'r', encoding='utf-8', errors='ignore') as f:
+                    for line_num, line in enumerate(f, 1):
+                        line_str = line.rstrip('\r\n')
+                        is_match = bool(compiled_re.search(line_str))
+                        if invert_match:
+                            is_match = not is_match
+
+                        if is_match:
+                            matches_count += 1
+                            rel_file = os.path.relpath(file_abs, WORKSPACE_ROOT)
+                            if line_numbers or len(files_to_search) > 1 or recursive:
+                                output_lines.append(f"`{rel_file}:{line_num}:` {line_str}\n")
+                            else:
+                                output_lines.append(f"{line_str}\n")
+
+                            if matches_count >= max_matches:
+                                output_lines.append(f"\n⚠️ *Output truncated at {max_matches} matches.*\n")
+                                break
+            except Exception:
+                continue
+
+        if output_lines:
+            yield self._sse.text("".join(output_lines))
+        else:
+            yield self._sse.text("ℹ️ No matching lines found.\n")
+
+        yield self._sse.done()
+
+    async def handle_sed(self, command: str, state: dict):
+        """Parse substitution expressions (s/pattern/replacement/g) and modify files or stream output."""
+        try:
+            args = shlex.split(command)
+        except Exception:
+            args = command.strip().split()
+
+        in_place = False
+        expr = None
+        targets = []
+
+        for arg in args[1:]:
+            if arg in ('-i', '--in-place') or arg.startswith('-i'):
+                in_place = True
+            elif arg.startswith('-'):
+                continue
+            elif expr is None:
+                expr = arg
+            else:
+                targets.append(arg)
+
+        if not expr or not targets:
+            yield self._sse.text("⚠️ **Usage:** `sed [-i] 's/pattern/replacement/g' <file1> [file2 ...]`\n")
+            yield self._sse.done()
+            return
+
+        if expr.startswith('s') and len(expr) >= 3:
+            delim = expr[1]
+            parts = expr[2:].split(delim)
+            if len(parts) >= 2:
+                pattern = parts[0]
+                replacement = parts[1]
+                sed_flags = parts[2] if len(parts) >= 3 else ""
+            else:
+                yield self._sse.text("❌ **Sed Error:** Invalid substitution expression.\n")
+                yield self._sse.done()
+                return
+        else:
+            yield self._sse.text("❌ **Sed Error:** Substitution expression must start with `s` (e.g. `s/pat/rep/g`).\n")
+            yield self._sse.done()
+            return
+
+        count = 0 if 'g' in sed_flags else 1
+        re_flags = re.IGNORECASE if ('i' in sed_flags or 'I' in sed_flags) else 0
+
+        try:
+            compiled_re = re.compile(pattern, re_flags)
+        except re.error as e:
+            yield self._sse.text(f"❌ **Regex Error:** {e}\n")
+            yield self._sse.done()
+            return
+
+        current_cwd = state.get("cwd", ".")
+
+        for target in targets:
+            combined = os.path.join(current_cwd, target)
+            try:
+                target_abs = get_secure_path(combined)
+                if not os.path.isfile(target_abs):
+                    yield self._sse.text(f"❌ **Error:** File `{target}` not found.\n")
+                    continue
+
+                with open(target_abs, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+
+                lines = content.splitlines(keepends=True)
+                new_lines = []
+                for line in lines:
+                    new_line = compiled_re.sub(replacement, line, count=count)
+                    new_lines.append(new_line)
+
+                new_content = "".join(new_lines)
+                file_rel = os.path.relpath(target_abs, WORKSPACE_ROOT)
+
+                if in_place:
+                    with open(target_abs, 'w', encoding='utf-8') as f:
+                        f.write(new_content)
+                    yield self._sse.text(f"✅ **Updated `{file_rel}` in-place.**\n")
+                else:
+                    yield self._sse.text(f"### Output for `{file_rel}`:\n```\n{new_content}\n```\n")
+
+            except PermissionError as e:
+                yield self._sse.text(f"❌ **Security Error ({target}):** {e}\n")
+            except Exception as e:
+                yield self._sse.text(f"❌ **Error ({target}):** {e}\n")
+
+        yield self._sse.done()
+
 
 # ============================================================================
 # CLI Execution
@@ -2215,7 +2617,7 @@ async def execute_cli(command_args: str, state: dict, sse: SSEStream) -> AsyncGe
         else:
             parsed_args = ["clone"] + shlex.split(command_args[6:])
     else:
-        binary = "./ocr"
+        binary = os.path.join(WORKSPACE_ROOT, "ocr")
         parsed_args = shlex.split(command_args)
 
     # Validate arguments — block dangerous option injection
@@ -2227,22 +2629,25 @@ async def execute_cli(command_args: str, state: dict, sse: SSEStream) -> AsyncGe
 
     args = [binary] + parsed_args
 
-    # Strict executable whitelist
-    if binary not in ALLOWED_BINARIES:
+    # Strict executable whitelist (map the absolute path back for the check)
+    check_bin = "./ocr" if binary == os.path.join(WORKSPACE_ROOT, "ocr") else binary
+    if check_bin not in ALLOWED_BINARIES:
         yield sse.text(f"\n\n**[Security Error]** Executable '{binary}' is not allowed.")
         yield sse.done()
         return
 
     # Detect review commands that should capture output
-    is_review_command = binary == "./ocr" and any(arg in parsed_args for arg in ["review", "scan"])
+    is_review_command = check_bin == "./ocr" and any(arg in parsed_args for arg in ["review", "scan"])
     review_file_handle = None
-    REVIEW_FILENAME = "CODEREVIEW.md"
 
     # Yield an empty chunk to trigger typing animation
     yield sse.role()
 
     try:
         active_cwd_abs = get_secure_path(state.get("cwd", "."))
+        REVIEW_FILENAME = os.path.join(active_cwd_abs, "CODEREVIEW.md")
+        TASKLIST_FILENAME = os.path.join(active_cwd_abs, "TASKLIST.md")
+
         process = await asyncio.create_subprocess_exec(
             *args,
             cwd=active_cwd_abs,
@@ -2283,17 +2688,22 @@ async def execute_cli(command_args: str, state: dict, sse: SSEStream) -> AsyncGe
         elif is_review_command and returncode == 0:
             yield sse.text("\n\nProcessing review output into task list...\n")
 
-            xml_content, task_count = process_review_file(input_file=REVIEW_FILENAME)
+            xml_content, task_count = process_review_file(
+                input_file=REVIEW_FILENAME,
+                output_file=TASKLIST_FILENAME
+            )
 
             if task_count > 0:
+                rel_review = os.path.relpath(REVIEW_FILENAME, WORKSPACE_ROOT)
+                rel_tasklist = os.path.relpath(TASKLIST_FILENAME, WORKSPACE_ROOT)
                 result_msg = (
                     f"\n✅ **Successfully generated XML task list with {task_count} items.**\n"
                     f"Copy the block below for issue import:\n\n"
                     f"```xml\n{xml_content}\n```\n\n"
                     f"### ⚙️ Interactive Actions & Workspace Controls\n"
                     f"Click any button below to manage, download, or execute these edits:\n\n"
-                    f"[![Download Review](https://img.shields.io/badge/CODEREVIEW-Download_Markdown-0284c7?style=for-the-badge&logo=markdown)](/download/CODEREVIEW.md) "
-                    f"[![Download Tasklist](https://img.shields.io/badge/TASKLIST-Download_XML-059669?style=for-the-badge&logo=xml-api)](/download/TASKLIST.md)\n\n"
+                    f"[![Download Review](https://img.shields.io/badge/CODEREVIEW-Download_Markdown-0284c7?style=for-the-badge&logo=markdown)](/download/file?path={rel_review}) "
+                    f"[![Download Tasklist](https://img.shields.io/badge/TASKLIST-Download_XML-059669?style=for-the-badge&logo=xml-api)](/download/file?path={rel_tasklist})\n\n"
                     f"[![Create Git Issues](https://img.shields.io/badge/GIT_ISSUES-Create_Local_Tasks-d97706?style=for-the-badge&logo=github)](/action/create-issues) "
                     f"[![Create Pull Request](https://img.shields.io/badge/PULL_REQUEST-Open_Review_PR-7c3aed?style=for-the-badge&logo=git)](/action/create-pr)\n"
                 )
@@ -2609,7 +3019,9 @@ async def download_file(path: str):
 @app.get("/action/create-issues")
 async def action_create_issues():
     """Triggers task splitting and commits local markdown task issues."""
-    count, error = create_local_git_issues()
+    state = await async_load_state()
+    cwd = state.get("cwd", ".")
+    count, error = create_local_git_issues(cwd=cwd)
     if error:
         return HTMLResponse(content=f"<h2>❌ Error Creating Issues</h2><p>{error}</p>", status_code=500)
 
