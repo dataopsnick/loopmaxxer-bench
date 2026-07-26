@@ -1187,6 +1187,7 @@ class CommandHandlers:
             (self._match_mv, self.handle_mv),
             (self._match_grep, self.handle_grep),
             (self._match_sed, self.handle_sed),
+            (self._match_mkdir, self.handle_mkdir),
         ]
 
     def find_special_handler(self, command: str) -> Optional[Callable]:
@@ -1270,6 +1271,10 @@ class CommandHandlers:
     def _match_sed(self, command: str) -> bool:
         stripped = command.strip()
         return stripped.startswith("sed ") or stripped == "sed" or stripped.startswith("sed\t")
+
+    def _match_mkdir(self, command: str) -> bool:
+        stripped = command.strip()
+        return stripped.startswith("mkdir ") or stripped == "mkdir" or stripped.startswith("mkdir\t")
 
     # --- Handlers ---
 
@@ -2576,6 +2581,56 @@ Provide a concise analysis focusing on type constraints, safety checks, or cast 
                 else:
                     yield self._sse.text(f"### Output for `{file_rel}`:\n```\n{new_content}\n```\n")
 
+            except PermissionError as e:
+                yield self._sse.text(f"❌ **Security Error ({target}):** {e}\n")
+            except Exception as e:
+                yield self._sse.text(f"❌ **Error ({target}):** {e}\n")
+
+        yield self._sse.done()
+
+    async def handle_mkdir(self, command: str, state: dict):
+        """Create directories safely within workspace."""
+        try:
+            args = shlex.split(command)
+        except Exception:
+            args = command.strip().split()
+
+        parents = False
+        targets = []
+
+        for arg in args[1:]:
+            if arg in ("-p", "--parents") or (arg.startswith("-") and "p" in arg[1:] and not arg.startswith("--")):
+                parents = True
+            elif not arg.startswith("-"):
+                targets.append(arg)
+
+        if not targets:
+            yield self._sse.text("⚠️ **Usage:** `mkdir [-p] <dir1> [dir2 ...]`\n")
+            yield self._sse.done()
+            return
+
+        current_cwd = state.get("cwd", ".")
+
+        for target in targets:
+            combined = os.path.join(current_cwd, target)
+            try:
+                target_abs = get_secure_path(combined)
+                file_rel = os.path.relpath(target_abs, WORKSPACE_ROOT)
+
+                if os.path.exists(target_abs):
+                    if os.path.isdir(target_abs):
+                        if parents:
+                            yield self._sse.text(f"✅ **Directory already exists:** `{file_rel}`\n")
+                        else:
+                            yield self._sse.text(f"❌ **Error:** Directory `{file_rel}` already exists.\n")
+                    else:
+                        yield self._sse.text(f"❌ **Error:** `{file_rel}` exists and is not a directory.\n")
+                else:
+                    if parents:
+                        os.makedirs(target_abs, exist_ok=True)
+                    else:
+                        os.mkdir(target_abs)
+                    yield self._sse.text(f"✅ **Created directory:** `{file_rel}`\n")
             except PermissionError as e:
                 yield self._sse.text(f"❌ **Security Error ({target}):** {e}\n")
             except Exception as e:
