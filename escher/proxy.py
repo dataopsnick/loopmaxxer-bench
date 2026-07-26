@@ -2910,6 +2910,11 @@ async def chat_completions(request: Request):
             "only": whitelist,
             "require_parameters": to_bool(state.get("require_parameters", False)),
         }
+        # Enable automatic prompt compression to prevent 400 Bad Request on large context
+        if "plugins" not in data:
+            data["plugins"] = []
+        if not any(p.get("id") == "context-compression" for p in data["plugins"]):
+            data["plugins"].append({"id": "context-compression"})
 
         is_streaming = data.get("stream", False)
 
