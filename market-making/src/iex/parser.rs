@@ -28,7 +28,7 @@ pub struct IexPcapParser {
 
 impl IexPcapParser {
     pub fn new() -> Self {
-        Self { is_swapped: false }
+        Self { _is_swapped: false }
     }
 
     /// Parse a PCAP file and return all market events.
