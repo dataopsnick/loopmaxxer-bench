@@ -166,7 +166,9 @@ impl HedgingRoutingMatrix {
             // Gradient: 2·γ·Σh + c_spread + r_carry
             let mut grad = [0.0f64; 3];
             for i in 0..3 {
-                grad[i] = 2.0 * self.risk_aversion * slippage[i] * h[i] + slippage[i] + carry[i];
+                grad[i] = 2.0 * self.risk_aversion * slippage[i] * h[i]
+                    + slippage[i] * h[i].signum()
+                    + carry[i] * h[i].signum();
             }
 
             // Project gradient onto constraint surface: wᵀgrad = 0

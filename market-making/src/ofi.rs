@@ -39,20 +39,24 @@ impl MicrostructureOFI {
         ask_px: f64,
         ask_sz: f64,
     ) -> f64 {
-        let delta_v_bid = if bid_px > self.prev_bid_price {
+        let delta_v_bid = if self.prev_bid_price == 0.0 {
+            0.0
+        } else if bid_px > self.prev_bid_price {
             bid_sz
         } else if bid_px == self.prev_bid_price {
             bid_sz - self.prev_bid_size
         } else {
-            0.0
+            -self.prev_bid_size
         };
 
-        let delta_v_ask = if ask_px < self.prev_ask_price {
+        let delta_v_ask = if self.prev_ask_price == 0.0 {
+            0.0
+        } else if ask_px < self.prev_ask_price {
             ask_sz
         } else if ask_px == self.prev_ask_price {
             ask_sz - self.prev_ask_size
         } else {
-            0.0
+            -self.prev_ask_size
         };
 
         let ofi_instant = delta_v_bid - delta_v_ask;

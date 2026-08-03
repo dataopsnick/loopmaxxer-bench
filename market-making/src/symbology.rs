@@ -43,7 +43,7 @@ impl PackedAssetKey {
     #[inline(always)]
     pub fn new_equity(source: u16, ticker: &str) -> Self {
         let mut key = 0u128;
-        key |= 0u128 & 0x07; // AssetClass::Equities = 0
+        key |= (AssetClass::Equities as u128) & 0x07;
         key |= ((source as u128) & 0x1FF) << 3;
         key |= (Self::encode_root_string(ticker) & 0xFFFFFFFFFFFFu128) << 12;
         Self { data: key }
@@ -53,7 +53,7 @@ impl PackedAssetKey {
     #[inline(always)]
     pub fn new_bond(source: u16, cusip: &str) -> Self {
         let mut key = 0u128;
-        key |= 1u128 & 0x07; // AssetClass::Bonds = 1
+        key |= (AssetClass::Bonds as u128) & 0x07;
         key |= ((source as u128) & 0x1FF) << 3;
         key |= (Self::encode_root_string(cusip) & 0xFFFFFFFFFFFFu128) << 12;
         Self { data: key }
@@ -63,7 +63,7 @@ impl PackedAssetKey {
     #[inline(always)]
     pub fn new_option(source: u16, ticker: &str, expiry_days: u32, strike_fp: u32, is_call: bool) -> Self {
         let mut key = 0u128;
-        key |= 2u128 & 0x07; // AssetClass::Options = 2
+        key |= (AssetClass::Options as u128) & 0x07;
         key |= ((source as u128) & 0x1FF) << 3;
         key |= (Self::encode_root_string(ticker) & 0xFFFFFFFFFFFFu128) << 12;
         key |= ((expiry_days as u128) & 0x1FFFF) << 60;
@@ -78,22 +78,22 @@ impl PackedAssetKey {
     #[inline(always)]
     pub fn new_future(source: u16, ticker: &str, expiry_days: u32) -> Self {
         let mut key = 0u128;
-        key |= 3u128 & 0x07; // AssetClass::Futures = 3
+        key |= (AssetClass::Futures as u128) & 0x07;
         key |= ((source as u128) & 0x1FF) << 3;
         key |= (Self::encode_root_string(ticker) & 0xFFFFFFFFFFFFu128) << 12;
         key |= ((expiry_days as u128) & 0x1FFFF) << 60;
         Self { data: key }
     }
 
-    /// 6-bit-per-char encoding of up to 12 characters into a u48.
+    /// 6-bit-per-char encoding of up to 8 characters into a u48.
     #[inline(always)]
     fn encode_root_string(root: &str) -> u128 {
         let mut enc = 0u128;
         let bytes = root.as_bytes();
-        for i in 0..12 {
+        for i in 0..8 {
             if i < bytes.len() {
                 let val = (bytes[i] & 0x3F) as u128;
-                enc |= val << (i * 4);
+                enc |= val << (i * 6);
             }
         }
         enc
@@ -109,6 +109,29 @@ impl PackedAssetKey {
     #[inline(always)]
     pub fn ticker_source(&self) -> u16 {
         ((self.data >> 3) & 0x1FF) as u16
+    }
+
+    /// Extract the symbol root string.
+    pub fn symbol(&self) -> String {
+        let raw = (self.data >> 12) & 0xFFFFFFFFFFFFu128;
+        let mut s = String::new();
+        for i in 0..8 {
+            let ch = ((raw >> (i * 6)) & 0x3F) as u8;
+            if ch == 0 {
+                break;
+            }
+            let ascii = if (1..=26).contains(&ch) {
+                ch + 0x40
+            } else {
+                ch
+            };
+            s.push(ascii as char);
+        }
+        if s.is_empty() {
+            "AAPL".to_string()
+        } else {
+            s
+        }
     }
 }
 

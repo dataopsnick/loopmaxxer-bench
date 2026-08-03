@@ -74,8 +74,11 @@ pub fn log_likelihood(&self, q: f64, gmm: &GmmModel, features: &[FeatureVector])
 
     // 1. Expected spread revenue
     let spread = self.params.half_spread * 2.0;
-    let fill_rate = self.params.liquidity_kappa * pi_noise;
-    let spread_revenue = fill_rate * spread * q.abs() / (1.0 + q.abs() * 0.001);
+    // Spread widens with position (Avellaneda-Stoikov), reducing fill rate.
+    let position_spread = spread * (1.0 + self.params.risk_aversion_gamma * q.abs() * 0.01);
+    let fill_rate = self.params.liquidity_kappa * pi_noise
+        * (-position_spread * self.params.liquidity_kappa).exp();
+    let spread_revenue = fill_rate * position_spread * q.abs();
 
     // 2. Expected adverse selection cost
     let avg_informed_flow = features

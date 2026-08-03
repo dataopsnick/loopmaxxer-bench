@@ -211,18 +211,27 @@ impl ActiveOrchestrator {
                     .quotes_generated
                     .fetch_add(1, Ordering::Relaxed);
 
-                // 4. Encode NOS for DMA submission
-                let _nos = self.sbe_encoder.encode_new_order_single(
-                    self.stats.nos_encoded.load(Ordering::Relaxed) as u64 + 1,
-                    "AAPL", // In production, resolved from asset_key
-                    1,      // Buy side for bid
+                // 4. Encode NOS for DMA submission (bid buy and ask sell)
+                let symbol = tick.asset_key.symbol();
+                let seq_bid = self.stats.nos_encoded.fetch_add(1, Ordering::Relaxed) as u64 + 1;
+                let _nos_bid = self.sbe_encoder.encode_new_order_single(
+                    seq_bid,
+                    &symbol,
+                    1, // Buy side for bid
                     100,
                     q.bid_price,
                     tick.timestamp_ns,
                 );
-                self.stats
-                    .nos_encoded
-                    .fetch_add(1, Ordering::Relaxed);
+
+                let seq_ask = self.stats.nos_encoded.fetch_add(1, Ordering::Relaxed) as u64 + 1;
+                let _nos_ask = self.sbe_encoder.encode_new_order_single(
+                    seq_ask,
+                    &symbol,
+                    2, // Sell side for ask
+                    100,
+                    q.ask_price,
+                    tick.timestamp_ns,
+                );
 
                 // 5. Record fill for kappa estimator
                 self.kappa_estimator

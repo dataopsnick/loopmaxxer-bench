@@ -157,50 +157,14 @@ impl CmtaClearingEngine {
         // Within each group, net offsetting quantities
         let mut netted: Vec<OptionPosition> = Vec::new();
 
-        for (_, mut group) in groups {
-            // Sort by strike for deterministic processing
-            group.sort_by(|a, b| {
-                a.strike
-                    .partial_cmp(&b.strike)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            // Sum up net quantity
-            let net_qty: i32 = group.iter().map(|p| p.quantity).sum();
-
-            if net_qty == 0 {
-                // All positions cancel — spread compression
-                // Keep the spread legs for margin calculation but mark as netted
-                for pos in group {
-                    if pos.quantity != 0 {
-                        netted.push(pos);
-                    }
+        for (_, group) in groups {
+            // Keep all positions distinct; only net identical (symbol, strike, expiry, type).
+            // Step-out netting should recognize spreads for margin reduction,
+            // not collapse distinct strikes.
+            for pos in group {
+                if pos.quantity != 0 {
+                    netted.push(pos);
                 }
-            } else {
-                // Net to a single position at weighted average strike
-                let weighted_strike: f64 = group
-                    .iter()
-                    .map(|p| p.strike * p.quantity as f64)
-                    .sum::<f64>()
-                    / net_qty as f64;
-                let weighted_price: f64 = group
-                    .iter()
-                    .map(|p| p.avg_price * p.quantity as f64)
-                    .sum::<f64>()
-                    / net_qty as f64;
-
-                let symbol = group[0].symbol.clone();
-                let expiration = group[0].expiration;
-                let is_call = group[0].is_call;
-
-                netted.push(OptionPosition {
-                    symbol,
-                    strike: weighted_strike,
-                    expiration,
-                    is_call,
-                    quantity: net_qty,
-                    avg_price: weighted_price,
-                });
             }
         }
 

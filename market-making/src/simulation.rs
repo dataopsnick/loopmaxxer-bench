@@ -326,9 +326,9 @@ impl MrMarketSimulation {
                                         symbol: self.config.symbol.clone(),
                                         normalized_trade_size: *size / self.config.adv,
                                         signed_order_flow: if is_buy_fill {
-                                            -*size
-                                        } else {
                                             *size
+                                        } else {
+                                            -*size
                                         },
                                         ofi_ewma: self.feature_extractor.current_ofi(),
                                         spread_width: if last_mid > 0.0 {

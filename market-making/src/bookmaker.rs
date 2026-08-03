@@ -267,23 +267,10 @@ impl KappaEstimator {
             return; // Avoid division by zero
         }
 
-        // Arrival rate: fills per nanosecond over the window
-        let window_duration = self.window_ns as f64;
-        let arrival_rate = n_fills / window_duration;
-
-        // Expected fills in window = arrival_rate * window_duration = n_fills
-        // κ = ln(1 + N_fills / (λ_arrival · Δt)) / D̄_spread
-        // Since λ_arrival · Δt ≈ N_fills, the ratio ≈ 1, giving ln(2).
-        // To make this sensitive to changes, we use the ratio of
-        // current fill rate to the historical average.
-        let lambda_dt = arrival_rate * window_duration; // = n_fills
-
-        let ratio = if lambda_dt > 1e-9 {
-            n_fills / lambda_dt
-        } else {
-            1.0
-        };
-
+        // Compare current fill count to the window's expected fill capacity.
+        // Expected fills = window_size (if we typically fill the window).
+        let expected = self.window_size as f64;
+        let ratio = if expected > 1e-9 { n_fills / expected } else { 1.0 };
         let new_kappa = (1.0 + ratio).ln() / avg_spread;
 
         // Clamp to sane bounds

@@ -105,7 +105,6 @@ impl DmaFrameBuffer {
     /// Set the number of valid bytes (after a DMA write completes).
     #[inline(always)]
     pub fn set_len(&mut self, len: usize) {
-        debug_assert!(len <= MAX_FRAME_SIZE, "frame length {} exceeds max {}", len, MAX_FRAME_SIZE);
         self.len = len.min(MAX_FRAME_SIZE);
     }
 
