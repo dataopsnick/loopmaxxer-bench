@@ -183,12 +183,18 @@ impl TimsMarginModel {
             }
         }
 
-        // Cross-asset netting benefit: if portfolio has offsetting deltas,
-        // apply a non-linear reduction factor.
-        let net_delta: f64 = positions.iter().map(|p| p.delta).sum();
-        let gross_delta: f64 = positions.iter().map(|p| p.delta.abs()).sum();
-        let netting_benefit = if gross_delta > 1e-9 {
-            (1.0 - (net_delta.abs() / gross_delta)).max(0.0)
+        // Cross-asset netting benefit: if portfolio has offsetting dollar
+        // deltas, apply a non-linear reduction factor.
+        // Raw option deltas from uncorrelated assets (e.g. AAPL delta +
+        // TSLA delta) cannot be meaningfully summed — they must be
+        // aggregated as *dollar deltas* (delta × spot) to produce a
+        // coherent margin netting factor.
+        let net_dollar_delta: f64 =
+            positions.iter().map(|p| p.delta * p.spot).sum();
+        let gross_dollar_delta: f64 =
+            positions.iter().map(|p| (p.delta * p.spot).abs()).sum();
+        let netting_benefit = if gross_dollar_delta > 1e-9 {
+            (1.0 - (net_dollar_delta.abs() / gross_dollar_delta)).max(0.0)
         } else {
             0.0
         };

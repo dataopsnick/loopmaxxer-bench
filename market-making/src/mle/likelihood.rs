@@ -78,7 +78,7 @@ pub fn log_likelihood(&self, q: f64, gmm: &GmmModel, features: &[FeatureVector])
     let position_spread = spread * (1.0 + self.params.risk_aversion_gamma * q.abs() * 0.01);
     let fill_rate = self.params.liquidity_kappa * pi_noise
         * (-position_spread * self.params.liquidity_kappa).exp();
-    let spread_revenue = fill_rate * position_spread * q.abs();
+    let spread_revenue = fill_rate * position_spread;
 
     // 2. Expected adverse selection cost
     let avg_informed_flow = features

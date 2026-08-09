@@ -154,18 +154,43 @@ impl CmtaClearingEngine {
                 .push(pos.clone());
         }
 
-        // Within each group, net offsetting quantities
+        // Within each group, net offsetting quantities across strikes.
+        // The previous code simply copied raw positions into the netted
+        // array without aggregating, making step-out netting a no-op.
         let mut netted: Vec<OptionPosition> = Vec::new();
 
-        for (_, group) in groups {
-            // Keep all positions distinct; only net identical (symbol, strike, expiry, type).
-            // Step-out netting should recognize spreads for margin reduction,
-            // not collapse distinct strikes.
-            for pos in group {
-                if pos.quantity != 0 {
-                    netted.push(pos);
-                }
+        for ((symbol, expiration, is_call), mut group) in groups {
+            // Sum quantities within the group to produce a single net position.
+            let net_qty: i32 = group.iter().map(|p| p.quantity).sum();
+
+            if net_qty == 0 {
+                // All positions cancel out — skip (margin reduction achieved)
+                continue;
             }
+
+            // Weighted average price across the group
+            let total_abs_qty: f64 =
+                group.iter().map(|p| p.quantity.abs() as f64).sum();
+            let weighted_price: f64 = if total_abs_qty > 1e-9 {
+                group
+                    .iter()
+                    .map(|p| p.avg_price * p.quantity.abs() as f64)
+                    .sum::<f64>()
+                    / total_abs_qty
+            } else {
+                0.0
+            };
+
+            // Use the first position's strike as representative
+            let representative = group.remove(0);
+            netted.push(OptionPosition {
+                symbol,
+                strike: representative.strike,
+                expiration,
+                is_call,
+                quantity: net_qty,
+                avg_price: weighted_price,
+            });
         }
 
         let positions_after = netted.len();

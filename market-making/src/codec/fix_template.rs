@@ -148,13 +148,14 @@ impl FixTemplateBuffer {
 
     /// Stuff the Price (Tag 44) into the pre-baked template slot.
     ///
-    /// Price is encoded as fixed-point with 4 decimal places.
+    /// Price is encoded as a FIX 4.4 float with a literal decimal point
+    /// (e.g. `150.2500`). The FIX protocol mandates a `.` separator for
+    /// fractional values — submitting a bare scaled integer would cause
+    /// the exchange to interpret the price as millions of dollars.
     #[inline(always)]
     pub fn set_price(&mut self, price_usd: f64) {
         let slot = &mut self.buf[nos_offsets::PRICE + 3..nos_offsets::SIDE - 1];
-        // Encode as price * 10000 (fixed-point, 4 decimals)
-        let price_cents = (price_usd * 10000.0) as u64;
-        write_u64_ascii(slot, price_cents);
+        write_price_ascii(slot, price_usd);
     }
 
     /// Stuff the Side (Tag 54) into the pre-baked template slot.
@@ -307,6 +308,63 @@ fn write_u32_ascii(slot: &mut [u8], val: u32) {
             break;
         }
     }
+}
+
+/// Write a price as a FIX 4.4 float string with a literal decimal point
+/// and 4 decimal places (e.g. `150.2500`) into a fixed-width byte slot.
+///
+/// This is the correct FIX encoding for Tag 44 (Price). The string is
+/// left-padded with spaces to fill the slot, matching FIX field semantics
+/// where leading whitespace is trimmed by the exchange parser.
+#[inline(always)]
+fn write_price_ascii(slot: &mut [u8], price: f64) {
+    // Split into integer and fractional parts
+    let abs_price = price.abs();
+    let int_part = abs_price as u64;
+    // Fractional part scaled to 4 decimal places
+    let frac_part = ((abs_price - int_part as f64) * 10000.0).round() as u64;
+
+    // Build the digit string right-to-left into a temp buffer
+    let mut tmp = [b' '; 24];
+    let mut pos = tmp.len();
+
+    // Write 4 fractional digits
+    let mut frac = frac_part;
+    for _ in 0..4 {
+        pos -= 1;
+        tmp[pos] = b'0' + (frac % 10) as u8;
+        frac /= 10;
+    }
+    // Decimal point
+    pos -= 1;
+    tmp[pos] = b'.';
+
+    // Write integer digits
+    let mut int_val = int_part;
+    if int_val == 0 {
+        pos -= 1;
+        tmp[pos] = b'0';
+    } else {
+        while int_val > 0 {
+            pos -= 1;
+            tmp[pos] = b'0' + (int_val % 10) as u8;
+            int_val /= 10;
+        }
+    }
+
+    // Handle negative sign
+    if price < 0.0 {
+        pos -= 1;
+        tmp[pos] = b'-';
+    }
+
+    // Copy into slot, left-padded with spaces
+    let digits = &tmp[pos..];
+    let pad_len = slot.len().saturating_sub(digits.len());
+    for i in 0..pad_len {
+        slot[i] = b' ';
+    }
+    slot[pad_len..].copy_from_slice(digits);
 }
 
 #[cfg(test)]

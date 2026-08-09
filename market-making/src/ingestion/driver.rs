@@ -140,8 +140,12 @@ impl UserspaceIngestionDriver {
             std::ptr::read_unaligned(frame.as_ptr() as *const SpiderStreamHeader)
         };
 
-        // After the header, there's a 12-byte symbol key, then the body
-        let body_offset = header_size + 12;
+        // Use the key_length from the wire header instead of a hardcoded 12.
+        // The previous code ignored `header.key_length`, so any payload with
+        // a different key size would read unaligned garbage memory for the
+        // body fields, corrupting prices and sizes.
+        let key_len = header.key_length as usize;
+        let body_offset = header_size + key_len;
         let body_size = StockBookQuoteBody::SIZE;
 
         if frame.len() < body_offset + body_size {

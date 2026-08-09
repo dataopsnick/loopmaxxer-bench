@@ -340,6 +340,6 @@ fn quoting_pipeline_with_ofi_drift() {
     let mut bm = mr_market::bookmaker::Bookmaker::new(config);
     let key = PackedAssetKey::new_equity(sources::NMS, "AAPL");
 
-    let quote = bm.compute_quote(key, 150.0, 150.05, 200.0, 150.10, 100.0, 0.0, 0.20, 1000);
+    let quote = bm.compute_quote(key, 150.0, 150.05, 200.0, 150.10, 100.0, 0.0, 0.20, 1000, 150.0);
     assert!(quote.is_some());
 }

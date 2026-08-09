@@ -107,10 +107,38 @@ impl GmmComponent {
     }
 
     /// Update the precomputed determinant and inverse from the covariance matrix.
+    ///
+    /// If the matrix is singular (inverse fails), ridge regularization is
+    /// progressively added to the diagonal until the matrix becomes
+    /// invertible. This prevents stale inverses from poisoning the GMM
+    /// state and causing EM convergence failure.
     pub fn update_precomputed(&mut self) {
         self.cov_det = matrix_determinant(&self.covariance, self.dim);
         if let Some(inv) = matrix_inverse(&self.covariance, self.dim) {
             self.cov_inv = inv;
+        } else {
+            // Matrix is singular — add escalating ridge regularization
+            // to the diagonal until it becomes invertible.
+            let mut reg = 1e-6;
+            for _ in 0..10 {
+                let mut regularized = self.covariance.clone();
+                for i in 0..self.dim {
+                    regularized[i * self.dim + i] += reg;
+                }
+                if let Some(inv) = matrix_inverse(&regularized, self.dim) {
+                    self.cov_det = matrix_determinant(&regularized, self.dim);
+                    self.cov_inv = inv;
+                    return;
+                }
+                reg *= 10.0;
+            }
+            // Fallback: use identity matrix to avoid NaN propagation
+            let mut identity = vec![0.0; self.dim * self.dim];
+            for i in 0..self.dim {
+                identity[i * self.dim + i] = 1.0;
+            }
+            self.cov_inv = identity;
+            self.cov_det = 1e-300;
         }
     }
 }

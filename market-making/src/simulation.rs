@@ -263,6 +263,7 @@ impl MrMarketSimulation {
                         position,
                         vol,
                         *timestamp_ns,
+                        mid, // For equities, spot = mid
                     ) {
                         n_quotes += 1;
                         current_quote = Some(quote);
@@ -510,7 +511,7 @@ fn simple_random(probability: f64) -> bool {
         let mut v = s.get();
         v = v.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         s.set(v);
-        let rand_val = ((v >> 11) as f64) / (u64::MAX as f64);
+        let rand_val = ((v >> 11) as f64) / ((1u64 << 53) as f64);
         rand_val < probability
     })
 }

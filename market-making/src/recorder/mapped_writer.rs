@@ -83,9 +83,13 @@ impl MappedColumnarWriter {
             panic!("Critical: Memory map mapping failure");
         }
 
-        // Keep the file handle alive by leaking it — the mmap persists
-        // and munmap in Drop handles cleanup.
-        std::mem::forget(file);
+        // POSIX mmap(2) guarantees the mapping remains valid even after the
+        // file descriptor is closed. The previous code called
+        // `std::mem::forget(file)` which permanently leaked the FD,
+        // eventually exhausting `ulimit -n` in long-running production.
+        // Letting `file` drop naturally closes the FD while the mapping
+        // persists until `munmap` in `Drop`.
+        drop(file);
 
         Self {
             file_ptr: map_addr as *mut u8,

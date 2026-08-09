@@ -88,12 +88,32 @@ impl TermStructureBetaEstimator {
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
-                    let _ = self.variance_accumulator.compare_exchange_weak(
-                        var_bits,
-                        next_var.to_bits(),
-                        Ordering::SeqCst,
-                        Ordering::Relaxed,
-                    );
+                    // Retry the variance CAS until it succeeds.
+                    // The previous code ignored the variance CAS result
+                    // (`let _ = ...`), which left variance stale if it
+                    // failed due to contention. This permanently
+                    // desynchronized cov/var, corrupting the beta estimate.
+                    loop {
+                        let current_var_bits = self
+                            .variance_accumulator
+                            .load(Ordering::Relaxed);
+                        if current_var_bits == var_bits {
+                            // No contention — safe to store
+                            let _ = self.variance_accumulator.compare_exchange_weak(
+                                var_bits,
+                                next_var.to_bits(),
+                                Ordering::SeqCst,
+                                Ordering::Relaxed,
+                            );
+                            break;
+                        }
+                        // Variance was modified by another thread — reload
+                        // and recompute so cov/var stay consistent.
+                        var_bits = current_var_bits;
+                        let prev_var = f64::from_bits(var_bits);
+                        next_var = self.decay_alpha * prev_var
+                            + (1.0 - self.decay_alpha) * (d_prompt * d_prompt);
+                    }
                     break;
                 }
                 Err(actual) => {

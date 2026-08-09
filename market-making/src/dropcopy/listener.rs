@@ -52,6 +52,18 @@ impl RawDropCopyListener {
         let mut bytes_left = 0;
 
         loop {
+            // If the buffer is completely full of unparseable data (no FIX
+            // message boundary found), the previous code would call
+            // `read(&mut buffer[8192..])` on an empty slice, causing `read`
+            // to return 0 and falsely reporting a disconnect. Fix: discard
+            // the front half of the buffer to make room for new data.
+            if bytes_left >= buffer.len() {
+                let half = buffer.len() / 2;
+                buffer.copy_within(half.., 0);
+                bytes_left = half;
+                eprintln!("[DROP COPY] Buffer full with no message boundary — discarding {} bytes", half);
+            }
+
             match self.stream.read(&mut buffer[bytes_left..]) {
                 Ok(0) => {
                     eprintln!("[DROP COPY] Disconnected from transaction desk");

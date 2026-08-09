@@ -29,6 +29,7 @@ fn bench_bookmaker_quote(c: &mut Criterion) {
                 black_box(0.0),
                 black_box(0.20),
                 black_box(1000),
+                black_box(150.0),
             );
             black_box(quote);
         })

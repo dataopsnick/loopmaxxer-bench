@@ -98,10 +98,17 @@ impl SOFRHedgeController {
         margin_haircut: f64,
         borrow_premium: f64,
     ) -> f64 {
+        // For a long position, the financing rate is a positive cost
+        // (borrow at SOFR + premium). For a short position, the seller
+        // receives cash collateral that earns the rebate rate
+        // (SOFR - premium), which is a financial *benefit* (negative cost).
+        // The previous code negated the short rate, making carry_cost
+        // positive (a penalty) for shorts — inverting the carry logic
+        // and breaking the MLE optimizer's symmetry.
         let financing_rate = if position > 0.0 {
             self.sofr_base_rate + borrow_premium
         } else {
-            -(self.sofr_base_rate - borrow_premium)
+            self.sofr_base_rate - borrow_premium
         };
 
         let carry_cost = position * spot_price * financing_rate;
@@ -119,14 +126,26 @@ impl SOFRHedgeController {
         mid_price: f64,
         position: f64,
         volatility: f64,
-        _spot_price: f64,
+        spot_price: f64,
         time_to_horizon: f64,
         margin_haircut: f64,
         borrow_premium: f64,
     ) -> f64 {
-        // Standard risk aversion penalty
-        let risk_penalty =
-            position * self.risk_aversion_gamma * volatility.powi(2) * time_to_horizon;
+        // Standard Avellaneda-Stoikov risk aversion penalty.
+        // The formal model requires the variance of the asset's *dollar*
+        // price path: σ_dollar = S · σ. Without multiplying by spot_price
+        // before squaring, the penalty is reduced by a factor of S²
+        // (e.g. ~22,500× too small for a $150 stock), causing the market
+        // maker to completely fail to skew quotes for inventory.
+        //
+        // `time_to_horizon` is expressed as a fraction of a trading day
+        // (e.g. 0.45 = 45% of the session remaining). Since `volatility`
+        // is annualized, we convert to years using 252 trading days.
+        let time_to_horizon_years = time_to_horizon / 252.0;
+        let risk_penalty = position
+            * self.risk_aversion_gamma
+            * (spot_price * volatility).powi(2)
+            * time_to_horizon_years;
 
         // SOFR capital carry penalty (marginal cost of holding one more unit)
         let sofr_penalty = position.signum()

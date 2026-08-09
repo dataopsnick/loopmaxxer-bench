@@ -24,6 +24,7 @@ use crate::hedging::router::HedgingRoutingMatrix;
 use crate::ingestion::numa::{pin_thread_to_core, NumaConfig};
 use crate::portfolio::AtomicPortfolioState;
 use crate::sofr::{AssetHedgeParameters, SOFRHedgeController};
+use crate::purge::sqf_driver::LowLatencyPurgeDriver;
 use crate::vol_surface::TaylorVolSurface;
 
 use super::live_tick::LiveMarketTick;
@@ -64,6 +65,8 @@ pub struct OrchestratorStats {
     pub quotes_generated: AtomicU64,
     /// Total quotes rejected by the risk gate.
     pub quotes_rejected: AtomicU64,
+    /// Total mass purges triggered via SQF.
+    pub purges_triggered: AtomicU64,
     /// Total hedge evaluations.
     pub hedge_evaluations: AtomicU64,
     /// Total hedge orders emitted.
@@ -78,10 +81,11 @@ impl OrchestratorStats {
     /// Snapshot the stats as a human-readable summary.
     pub fn snapshot(&self) -> String {
         format!(
-            "ticks={}, quotes={}, rejected={}, hedges={}, hedge_orders={}, nos={}, dropped={}",
+            "ticks={}, quotes={}, rejected={}, purges={}, hedges={}, hedge_orders={}, nos={}, dropped={}",
             self.ticks_processed.load(Ordering::Relaxed),
             self.quotes_generated.load(Ordering::Relaxed),
             self.quotes_rejected.load(Ordering::Relaxed),
+            self.purges_triggered.load(Ordering::Relaxed),
             self.hedge_evaluations.load(Ordering::Relaxed),
             self.hedge_orders.load(Ordering::Relaxed),
             self.nos_encoded.load(Ordering::Relaxed),
@@ -117,6 +121,10 @@ pub struct ActiveOrchestrator {
     stats: OrchestratorStats,
     /// Kill switch flag.
     running: AtomicBool,
+    /// Optional SQF mass purge driver for risk gate breaches.
+    purge_driver: Option<LowLatencyPurgeDriver>,
+    /// Session start timestamp (ns) for computing time_to_midnight.
+    session_start_ns: u64,
     /// Configuration.
     config: OrchestratorConfig,
 }
@@ -145,6 +153,8 @@ impl ActiveOrchestrator {
             sbe_encoder: SbeEncoder::new(),
             stats: OrchestratorStats::default(),
             running: AtomicBool::new(false),
+            purge_driver: None,
+            session_start_ns: 0,
             config,
         }
     }
@@ -203,6 +213,7 @@ impl ActiveOrchestrator {
             position,
             vol,
             tick.timestamp_ns,
+            tick.spot,
         );
 
         match &quote {
@@ -211,14 +222,16 @@ impl ActiveOrchestrator {
                     .quotes_generated
                     .fetch_add(1, Ordering::Relaxed);
 
-                // 4. Encode NOS for DMA submission (bid buy and ask sell)
+                // 4. Encode NOS for DMA submission (bid buy and ask sell).
+                // Use the configured max_order_qty instead of a hardcoded 100.
                 let symbol = tick.asset_key.symbol();
+                let order_qty = self.config.bookmaker_config.max_order_qty;
                 let seq_bid = self.stats.nos_encoded.fetch_add(1, Ordering::Relaxed) as u64 + 1;
                 let _nos_bid = self.sbe_encoder.encode_new_order_single(
                     seq_bid,
                     &symbol,
                     1, // Buy side for bid
-                    100,
+                    order_qty,
                     q.bid_price,
                     tick.timestamp_ns,
                 );
@@ -228,16 +241,24 @@ impl ActiveOrchestrator {
                     seq_ask,
                     &symbol,
                     2, // Sell side for ask
-                    100,
+                    order_qty,
                     q.ask_price,
                     tick.timestamp_ns,
                 );
 
-                // 5. Record fill for kappa estimator
-                self.kappa_estimator
-                    .record_fill(tick.timestamp_ns, q.spread_width);
+                // 5. Hedge evaluation (Whalley-Wilmott bands).
+                // Compute time_to_midnight dynamically from the tick timestamp
+                // instead of using a hardcoded 0.45. The Whalley-Wilmott band
+                // and SOFR carry penalty rely on a decaying time parameter
+                // (T-t) to properly scale risk as the session nears the close.
+                // We assume a 6.5-hour US equity session (23400 seconds) and
+                // compute the remaining fraction of the trading day.
+                let session_start_ns = self.session_start_ns;
+                let session_duration_ns: u64 = 23_400 * 1_000_000_000; // 6.5 hours
+                let elapsed_ns = tick.timestamp_ns.saturating_sub(session_start_ns);
+                let remaining_ns = session_duration_ns.saturating_sub(elapsed_ns);
+                let time_to_midnight = (remaining_ns as f64 / session_duration_ns as f64).max(0.0);
 
-                // 6. Hedge evaluation (Whalley-Wilmott bands)
                 self.stats
                     .hedge_evaluations
                     .fetch_add(1, Ordering::Relaxed);
@@ -252,7 +273,7 @@ impl ActiveOrchestrator {
                     0.0, // target delta = 0 (delta-neutral)
                     &hedge_params,
                     tick.spot,
-                    0.45, // time to midnight
+                    time_to_midnight,
                 );
 
                 if let Some(qty) = hedge_qty {
@@ -276,6 +297,20 @@ impl ActiveOrchestrator {
                 self.stats
                     .quotes_rejected
                     .fetch_add(1, Ordering::Relaxed);
+
+                // When the pre-trade risk gate rejects a quote, the kill
+                // switch is tripped. Per Spec §9, the orchestrator must
+                // immediately invoke the SQF purge driver to flush all
+                // resting orders from the exchange book. The previous code
+                // only logged an error and continued, leaving stale quotes
+                // live on the exchange after a risk breach.
+                if self.is_kill_switch_tripped() {
+                    eprintln!("[RISK] PRE-TRADE REJECT: Kill switch tripped — triggering SQF mass purge");
+                    self.stats.purges_triggered.fetch_add(1, Ordering::Relaxed);
+                    if let Some(ref purge_driver) = self.purge_driver {
+                        let _ = purge_driver.trigger_mass_purge(&tick.asset_key.symbol(), tick.timestamp_ns);
+                    }
+                }
             }
         }
 
@@ -327,6 +362,32 @@ impl ActiveOrchestrator {
     /// Get the current spread multiplier from the kappa estimator.
     pub fn spread_multiplier(&self) -> f64 {
         self.kappa_estimator.spread_multiplier()
+    }
+
+    /// Record a confirmed fill for the kappa estimator.
+    ///
+    /// This must only be called when a confirmed execution report is
+    /// received (e.g., from the `RawDropCopyListener`), **not** on every
+    /// generated quote. The previous implementation called
+    /// `record_fill()` unconditionally in `process_tick`, which broke
+    /// the sliding-window arrival intensity logic by assuming every
+    /// quote results in a fill.
+    #[inline]
+    pub fn record_fill(&mut self, timestamp_ns: u64, spread_at_fill: f64) {
+        self.kappa_estimator.record_fill(timestamp_ns, spread_at_fill);
+    }
+
+    /// Set the session start timestamp for computing time_to_midnight.
+    ///
+    /// Should be called at the start of the trading session with the
+    /// exchange's opening timestamp (in nanoseconds).
+    pub fn set_session_start(&mut self, session_start_ns: u64) {
+        self.session_start_ns = session_start_ns;
+    }
+
+    /// Attach an active SQF LowLatencyPurgeDriver to the orchestrator.
+    pub fn set_purge_driver(&mut self, purge_driver: LowLatencyPurgeDriver) {
+        self.purge_driver = Some(purge_driver);
     }
 
     /// Update the Taylor vol surface coefficients.
@@ -432,6 +493,7 @@ mod tests {
         assert!(quote.is_none(), "Quote should be rejected by risk gate");
         assert!(orch.is_kill_switch_tripped(), "Kill switch should be tripped");
         assert!(orch.stats().quotes_rejected.load(Ordering::Relaxed) >= 1);
+        assert_eq!(orch.stats().purges_triggered.load(Ordering::Relaxed), 1);
     }
 
     #[test]

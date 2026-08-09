@@ -83,6 +83,11 @@ impl Bookmaker {
     /// Compute the optimal bid/ask quote given current market state.
     ///
     /// Returns `None` if the pre-trade risk gate rejects the quote.
+    ///
+    /// `spot_price` is the underlying asset's spot price (not the option
+    /// premium). For equities this equals `mid_price`, but for options the
+    /// SOFR carry cost and risk penalty must use the underlying spot, not
+    /// the option premium, to correctly scale the dollar-variance penalty.
     pub fn compute_quote(
         &mut self,
         asset_key: PackedAssetKey,
@@ -94,6 +99,7 @@ impl Bookmaker {
         position: f64,
         volatility: f64,
         timestamp_ns: u64,
+        spot_price: f64,
     ) -> Option<BookQuote> {
         // 1. OFI drift adjustment
         let ofi_drift = self.ofi.compute_drift_adjustment(bid_px, bid_sz, ask_px, ask_sz);
@@ -103,7 +109,7 @@ impl Bookmaker {
             mid_price,
             position,
             volatility,
-            mid_price,
+            spot_price,
             self.config.time_to_horizon,
             self.config.margin_haircut,
             self.config.borrow_premium,
@@ -120,10 +126,15 @@ impl Bookmaker {
         let ask_quote = reservation_adjusted + (spread_width / 2.0);
 
         // 5. Pre-trade risk gate validation
-        if !self.risk_gate.validate_order(bid_quote, 100, position) {
+        // Use the quote's actual intended quantity instead of a hardcoded
+        // value of 100. The previous code always validated against 100,
+        // which bypassed the max_order_qty check if the real order size
+        // differed.
+        let quote_qty = self.config.max_order_qty;
+        if !self.risk_gate.validate_order(bid_quote, quote_qty, position) {
             return None;
         }
-        if !self.risk_gate.validate_order(ask_quote, 100, position) {
+        if !self.risk_gate.validate_order(ask_quote, quote_qty, position) {
             return None;
         }
 
@@ -250,9 +261,17 @@ impl KappaEstimator {
     ///
     /// `κ = ln(1 + N_fills / (λ_arrival · Δt)) / D̄_spread`
     ///
-    /// where `λ_arrival · Δt` is the expected number of fills in the window
-    /// (approximated by the window size if we have enough data), and
-    /// `D̄_spread` is the average spread at fill time.
+    /// where `λ_arrival · Δt` is the expected number of fills in the
+    /// time window. The previous code used `window_size` (the ring
+    /// buffer capacity, e.g. 200) as the expected count, which is a
+    /// physical memory limit — not a time-based arrival intensity.
+    /// This caused κ to drift randomly based on the data structure's
+    /// capacity rather than actual market microstructure.
+    ///
+    /// Fix: compute expected fills from the configured time window
+    /// (`window_ns`) using a baseline arrival rate of 1 fill/second.
+    /// If we observe more fills than expected, κ increases (tighten
+    /// spreads); if fewer, κ decreases (widen spreads).
     fn recompute_kappa(&mut self, _current_ns: u64) {
         let n_fills = self.fill_timestamps.len() as f64;
         if n_fills < 2.0 {
@@ -267,10 +286,10 @@ impl KappaEstimator {
             return; // Avoid division by zero
         }
 
-        // Compare current fill count to the window's expected fill capacity.
-        // Expected fills = window_size (if we typically fill the window).
-        let expected = self.window_size as f64;
-        let ratio = if expected > 1e-9 { n_fills / expected } else { 1.0 };
+        // Expected fills = baseline_rate (1 fill/sec) × window duration (sec)
+        let window_secs = self.window_ns as f64 / 1_000_000_000.0;
+        let expected = window_secs.max(1.0);
+        let ratio = n_fills / expected;
         let new_kappa = (1.0 + ratio).ln() / avg_spread;
 
         // Clamp to sane bounds
@@ -348,7 +367,7 @@ mod tests {
         let mut bm = Bookmaker::new(config);
         let key = PackedAssetKey::new_equity(sources::NMS, "AAPL");
 
-        let quote = bm.compute_quote(key, 150.0, 149.98, 500.0, 150.02, 500.0, 0.0, 0.20, 1000);
+        let quote = bm.compute_quote(key, 150.0, 149.98, 500.0, 150.02, 500.0, 0.0, 0.20, 1000, 150.0);
         assert!(quote.is_some(), "Should produce quote for neutral position");
         let q = quote.unwrap();
         assert!(q.bid_price < q.ask_price, "Bid must be below ask");
@@ -365,10 +384,10 @@ mod tests {
         let key = PackedAssetKey::new_equity(sources::NMS, "AAPL");
 
         let q_flat = bm
-            .compute_quote(key, 150.0, 149.98, 500.0, 150.02, 500.0, 0.0, 0.20, 1000)
+            .compute_quote(key, 150.0, 149.98, 500.0, 150.02, 500.0, 0.0, 0.20, 1000, 150.0)
             .unwrap();
         let q_long = bm
-            .compute_quote(key, 150.0, 149.98, 500.0, 150.02, 500.0, 5000.0, 0.20, 1000)
+            .compute_quote(key, 150.0, 149.98, 500.0, 150.02, 500.0, 5000.0, 0.20, 1000, 150.0)
             .unwrap();
 
         assert!(

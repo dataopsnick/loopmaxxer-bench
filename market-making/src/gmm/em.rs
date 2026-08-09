@@ -144,8 +144,16 @@ impl GmmFitter {
                                 responsibilities[i * k + j] * diff_r * diff_c
                             })
                             .sum();
-                        model.components[j].covariance[r * dim + c] =
-                            sum / nk + self.config.regularization;
+                        model.components[j].covariance[r * dim + c] = sum / nk;
+                        // Ridge regularization must only be added to the
+                        // diagonal elements. Adding it to off-diagonal
+                        // elements introduces spurious correlations that
+                        // destroy the positive semi-definiteness of the
+                        // covariance matrix.
+                        if r == c {
+                            model.components[j].covariance[r * dim + c] +=
+                                self.config.regularization;
+                        }
                     }
                 }
 

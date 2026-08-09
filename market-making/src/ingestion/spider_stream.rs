@@ -78,15 +78,21 @@ pub struct OptionBookQuoteBody {
 ///
 /// # Safety
 /// The caller must ensure the slice is at least `SpiderStreamHeader::SIZE`
-/// bytes and is properly aligned (or use `read_unaligned`).
+/// bytes and that the referenced memory remains valid for the lifetime `'a`
+/// (i.e., the DMA buffer is not recycled while the reference is live).
+/// Using `'static` would be a soundness violation — the NIC overwrites
+/// this exact memory location when the ring buffer wraps.
 #[inline(always)]
-pub unsafe fn cast_header(ptr: *const u8) -> &'static SpiderStreamHeader {
+pub unsafe fn cast_header<'a>(ptr: *const u8) -> &'a SpiderStreamHeader {
     &*(ptr as *const SpiderStreamHeader)
 }
 
 /// Zero-copy cast a byte slice to a StockBookQuoteBody reference.
+///
+/// # Safety
+/// Same invariants as `cast_header` — the memory must remain valid for `'a`.
 #[inline(always)]
-pub unsafe fn cast_stock_quote(ptr: *const u8) -> &'static StockBookQuoteBody {
+pub unsafe fn cast_stock_quote<'a>(ptr: *const u8) -> &'a StockBookQuoteBody {
     &*(ptr as *const StockBookQuoteBody)
 }
 
