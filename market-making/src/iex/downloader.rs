@@ -6,8 +6,21 @@
 //! IEX provides daily PCAP files containing TOPS and DEEP market data
 //! for all US equities. Files are named by date, e.g. "20240115_PCAP.gz".
 
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
+
+/// Item returned by IEX HIST API (`https://iextrading.com/api/1.0/hist`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct HistFeedEntry {
+    pub link: String,
+    pub date: String,
+    pub feed: String,
+    pub version: String,
+    pub protocol: String,
+    pub size: String,
+}
 
 /// Which IEX historical feed to download.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +51,7 @@ impl IexFeed {
 
 /// IEX historical data downloader.
 pub struct IexDownloader {
-    /// Base URL for IEX historical data
+    /// Base URL for IEX historical data or API metadata endpoint
     base_url: String,
     /// Local directory to store downloaded files
     data_dir: PathBuf,
@@ -48,7 +61,7 @@ impl IexDownloader {
     /// Create a new downloader with the given data directory.
     pub fn new(data_dir: impl AsRef<Path>) -> Self {
         Self {
-            base_url: "https://www.nanex.net/iex".to_string(),
+            base_url: "https://iextrading.com/api/1.0/hist".to_string(),
             data_dir: data_dir.as_ref().to_path_buf(),
         }
     }
@@ -61,16 +74,78 @@ impl IexDownloader {
         }
     }
 
-    /// Build the download URL for a given date and feed.
+    /// Fetch metadata from the HIST API endpoint if `base_url` points to an API endpoint.
+    pub fn fetch_hist_metadata(&self) -> Result<HashMap<String, Vec<HistFeedEntry>>, String> {
+        let response = reqwest::blocking::get(&self.base_url)
+            .map_err(|e| format!("HTTP request to HIST API failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(format!(
+                "HIST API returned status {} for {}",
+                response.status(),
+                self.base_url
+            ));
+        }
+
+        let text = response
+            .text()
+            .map_err(|e| format!("Failed to read response text: {}", e))?;
+
+        let entries: HashMap<String, Vec<HistFeedEntry>> = serde_json::from_str(&text)
+            .map_err(|e| format!("Failed to parse HIST API JSON response: {}", e))?;
+
+        Ok(entries)
+    }
+
+    /// Resolve the direct download URL for a given date and feed.
+    /// First attempts to lookup in the IEX HIST API index, then falls back to static URL builder.
+    pub fn resolve_download_url(&self, date: &str, feed: IexFeed) -> Result<String, String> {
+        if self.base_url.contains("/api/") {
+            match self.fetch_hist_metadata() {
+                Ok(metadata) => {
+                    if let Some(entries) = metadata.get(date) {
+                        let target_feed = feed.suffix().to_lowercase();
+                        for entry in entries {
+                            if entry.feed.to_lowercase() == target_feed {
+                                return Ok(entry.link.clone());
+                            }
+                        }
+                        return Err(format!(
+                            "Feed {} not found in IEX HIST metadata for date {}",
+                            feed.suffix(),
+                            date
+                        ));
+                    } else {
+                        return Err(format!("Date {} not found in IEX HIST metadata index", date));
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to query HIST API ({}), falling back to static URL builder",
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(self.build_url(date, feed))
+    }
+
+    /// Build the fallback download URL for a given date and feed.
     ///
     /// Date format: "YYYYMMDD"
     pub fn build_url(&self, date: &str, feed: IexFeed) -> String {
         let year = &date[..4];
         let month = &date[4..6];
         let day = &date[6..8];
+        let base = if self.base_url.contains("/api/") {
+            "https://www.nanex.net/iex"
+        } else {
+            &self.base_url
+        };
         format!(
             "{}/{}/{}/{}/{}_{}_{}.pcap.gz",
-            self.base_url,
+            base,
             feed.path_segment(),
             year,
             month,
@@ -90,13 +165,14 @@ impl IexDownloader {
     ///
     /// Returns the path to the downloaded file, or an error.
     pub fn download(&self, date: &str, feed: IexFeed) -> Result<PathBuf, String> {
-        let url = self.build_url(date, feed);
         let dest = self.local_path(date, feed);
 
         if dest.exists() {
             info!("File already exists, skipping download: {}", dest.display());
             return Ok(dest);
         }
+
+        let url = self.resolve_download_url(date, feed)?;
 
         // Ensure data directory exists
         if let Some(parent) = dest.parent() {

@@ -183,8 +183,7 @@ enum Commands {
     },
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
@@ -217,7 +216,8 @@ async fn main() {
             memorydb_token,
             output,
         } => {
-            run_simulation(SimulationArgs {
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+            rt.block_on(run_simulation(SimulationArgs {
                 symbol,
                 adv,
                 sofr,
@@ -240,8 +240,7 @@ async fn main() {
                 memorydb_tls,
                 memorydb_token,
                 output,
-            })
-            .await
+            }));
         }
 
         Commands::Download {
@@ -273,18 +272,8 @@ async fn main() {
         }
 
         Commands::Test { n_events } => {
-            info!("Running quick synthetic test with {} events", n_events);
-            let config = SimulationConfig {
-                symbol: "TEST".to_string(),
-                adv: 1_000_000.0,
-                fill_probability: 0.5,
-                ..Default::default()
-            };
-            let mut sim = MrMarketSimulation::new(config);
-            let mut store = VectorStore::in_memory();
-
-            let result = sim.run_synthetic(n_events, &mut store).await;
-            print_report(&result);
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+            rt.block_on(run_test(n_events));
         }
 
         Commands::Live {
@@ -311,6 +300,21 @@ async fn main() {
             });
         }
     }
+}
+
+async fn run_test(n_events: usize) {
+    info!("Running quick synthetic test with {} events", n_events);
+    let config = SimulationConfig {
+        symbol: "TEST".to_string(),
+        adv: 1_000_000.0,
+        fill_probability: 0.5,
+        ..Default::default()
+    };
+    let mut sim = MrMarketSimulation::new(config);
+    let mut store = VectorStore::in_memory();
+
+    let result = sim.run_synthetic(n_events, &mut store).await;
+    print_report(&result);
 }
 
 /// Arguments for the `run` subcommand.
