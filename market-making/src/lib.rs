@@ -5,6 +5,7 @@
 pub mod bookmaker;
 pub mod clearing;
 pub mod codec;
+pub mod cpcv;
 pub mod dropcopy;
 pub mod gmm;
 pub mod hedging;

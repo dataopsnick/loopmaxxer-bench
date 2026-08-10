@@ -11,8 +11,10 @@ use clap::{Parser, Subcommand};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+use mr_market::cpcv::{CpcvConfig, CpcvEvaluator, CpcvReport};
 use mr_market::gmm::em::EmConfig;
 use mr_market::iex::downloader::{IexDownloader, IexFeed};
+use mr_market::iex::parser::{generate_synthetic_events, load_events};
 use mr_market::memorydb::vector_store::VectorStore;
 use mr_market::memorydb::MemoryDbConfig;
 use mr_market::simulation::{MrMarketSimulation, SimulationConfig};
@@ -141,6 +143,63 @@ enum Commands {
         /// Number of synthetic events
         #[arg(short, long, default_value_t = 1000)]
         n_events: usize,
+    },
+
+    /// Run Combinatorial Purged Cross-Validation (CPCV) to measure VWAP
+    /// slippage and price impact against real historical data across a
+    /// distribution of purged/embargoed out-of-sample folds.
+    Cpcv {
+        /// Symbol to evaluate (e.g. AAPL)
+        #[arg(long, default_value = "AAPL")]
+        symbol: String,
+
+        /// Average daily volume (shares) for feature normalization
+        #[arg(short = 'v', long, default_value_t = 10_000_000.0)]
+        adv: f64,
+
+        /// SOFR base rate (e.g. 0.0535 for 5.35%)
+        #[arg(short = 'r', long, default_value_t = 0.0535)]
+        sofr: f64,
+
+        /// Risk aversion parameter γ
+        #[arg(short = 'g', long, default_value_t = 0.015)]
+        gamma: f64,
+
+        /// Liquidity parameter κ
+        #[arg(short = 'k', long, default_value_t = 2.1)]
+        kappa: f64,
+
+        /// Fill probability when our quote is crossed (0..1)
+        #[arg(long, default_value_t = 0.3)]
+        fill_prob: f64,
+
+        /// Number of contiguous groups N the history is partitioned into
+        #[arg(short = 'N', long, default_value_t = 6)]
+        n_groups: usize,
+
+        /// Number of groups k held out as the test set per combination
+        #[arg(short = 'K', long, default_value_t = 2)]
+        k_test_groups: usize,
+
+        /// Purge window (event indices) removed before each test block
+        #[arg(long, default_value_t = 10)]
+        purge_window: usize,
+
+        /// Embargo fraction removed after each test block
+        #[arg(long, default_value_t = 0.01)]
+        embargo_pct: f64,
+
+        /// Path to IEX PCAP or CSV file (if omitted, uses synthetic data)
+        #[arg(short = 'd', long)]
+        data_file: Option<String>,
+
+        /// Number of synthetic events to generate (if no data file)
+        #[arg(short = 'n', long, default_value_t = 3000)]
+        n_events: usize,
+
+        /// Output JSON report to file (if omitted, prints summary to stdout)
+        #[arg(short = 'o', long)]
+        output: Option<String>,
     },
 
     /// Run the live production orchestrator (NUMA-pinned spin loop)
@@ -276,6 +335,39 @@ fn main() {
             rt.block_on(run_test(n_events));
         }
 
+        Commands::Cpcv {
+            symbol,
+            adv,
+            sofr,
+            gamma,
+            kappa,
+            fill_prob,
+            n_groups,
+            k_test_groups,
+            purge_window,
+            embargo_pct,
+            data_file,
+            n_events,
+            output,
+        } => {
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+            rt.block_on(run_cpcv(CpcvArgs {
+                symbol,
+                adv,
+                sofr,
+                gamma,
+                kappa,
+                fill_prob,
+                n_groups,
+                k_test_groups,
+                purge_window,
+                embargo_pct,
+                data_file,
+                n_events,
+                output,
+            }));
+        }
+
         Commands::Live {
             symbol,
             sofr,
@@ -317,6 +409,66 @@ async fn run_test(n_events: usize) {
     print_report(&result);
 }
 
+/// Run Combinatorial Purged Cross-Validation and print/save the report.
+async fn run_cpcv(args: CpcvArgs) {
+    info!(
+        "Configuring CPCV for {}: N={} groups, k={} test groups",
+        args.symbol, args.n_groups, args.k_test_groups
+    );
+
+    let events = if let Some(ref data_file) = args.data_file {
+        info!("Loading market data from: {}", data_file);
+        match load_events(data_file) {
+            Ok(events) => events,
+            Err(e) => {
+                error!("Failed to load data file: {}", e);
+                warn!("Falling back to synthetic data ({} events)", args.n_events);
+                generate_synthetic_events(&args.symbol, args.n_events)
+            }
+        }
+    } else {
+        info!("No data file specified, using {} synthetic events", args.n_events);
+        generate_synthetic_events(&args.symbol, args.n_events)
+    };
+
+    let sim_config = SimulationConfig {
+        symbol: args.symbol.clone(),
+        adv: args.adv,
+        sofr_rate: args.sofr,
+        risk_aversion: args.gamma,
+        liquidity_kappa: args.kappa,
+        fill_probability: args.fill_prob,
+        em_config: EmConfig::default(),
+        ..Default::default()
+    };
+
+    let cpcv_config = CpcvConfig {
+        n_groups: args.n_groups,
+        k_test_groups: args.k_test_groups,
+        purge_window: args.purge_window,
+        embargo_pct: args.embargo_pct,
+    };
+
+    let evaluator = CpcvEvaluator::new(sim_config, cpcv_config);
+    let mut vector_store = VectorStore::in_memory();
+    let report = evaluator.run(&events, &mut vector_store).await;
+
+    if let Some(ref output_path) = args.output {
+        match serde_json::to_string_pretty(&report) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(output_path, &json) {
+                    error!("Failed to write output file: {}", e);
+                } else {
+                    info!("CPCV report written to {}", output_path);
+                }
+            }
+            Err(e) => error!("Failed to serialize CPCV report: {}", e),
+        }
+    }
+
+    print_cpcv_report(&report);
+}
+
 /// Arguments for the `run` subcommand.
 struct SimulationArgs {
     symbol: String,
@@ -340,6 +492,23 @@ struct SimulationArgs {
     memorydb_port: u16,
     memorydb_tls: bool,
     memorydb_token: Option<String>,
+    output: Option<String>,
+}
+
+/// Arguments for the `cpcv` subcommand.
+struct CpcvArgs {
+    symbol: String,
+    adv: f64,
+    sofr: f64,
+    gamma: f64,
+    kappa: f64,
+    fill_prob: f64,
+    n_groups: usize,
+    k_test_groups: usize,
+    purge_window: usize,
+    embargo_pct: f64,
+    data_file: Option<String>,
+    n_events: usize,
     output: Option<String>,
 }
 
@@ -524,6 +693,44 @@ async fn run_simulation(args: SimulationArgs) {
     }
 
     print_report(&result);
+}
+
+/// Print a human-readable CPCV report to stdout.
+fn print_cpcv_report(report: &CpcvReport) {
+    println!();
+    println!("╔══════════════════════════════════════════════════════════════════╗");
+    println!("║   Combinatorial Purged Cross-Validation (CPCV) Report             ║");
+    println!("╚══════════════════════════════════════════════════════════════════╝");
+    println!();
+    println!("N groups:            {}", report.n_groups);
+    println!("k test groups:       {}", report.k_test_groups);
+    println!("C(N,k) combinations: {}", report.n_combinations);
+    println!("φ backtest paths:    {}", report.n_paths);
+    println!();
+
+    println!("── VWAP Slippage Distribution (bps, across φ paths) ─────────────");
+    println!("  Mean:    {:>10.4}", report.summary.mean_slippage_bps);
+    println!("  Std:     {:>10.4}", report.summary.std_slippage_bps);
+    println!("  Median:  {:>10.4}", report.summary.median_slippage_bps);
+    println!("  Min:     {:>10.4}", report.summary.min_slippage_bps);
+    println!("  Max:     {:>10.4}", report.summary.max_slippage_bps);
+    println!();
+
+    println!("── Price-Impact λ Delta Distribution (sim − real, across φ paths) ──");
+    println!("  Mean:    {:>10.6}", report.summary.mean_lambda_delta);
+    println!("  Std:     {:>10.6}", report.summary.std_lambda_delta);
+    println!();
+
+    println!("── Per-Path Summary ─────────────────────────────────────────────");
+    for path in &report.paths {
+        println!(
+            "  Path {:>2}: slippage={:>10.4} bps, λ_delta={:>10.6}",
+            path.path_index, path.mean_slippage_bps, path.mean_lambda_delta
+        );
+    }
+
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════");
 }
 
 /// Print a human-readable summary report to stdout.

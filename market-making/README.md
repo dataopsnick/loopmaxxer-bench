@@ -23,6 +23,7 @@ The system is implemented entirely in Rust and organized into two tiers:
 | `gmm` | — | 3-component GMM (noise/institutional/informed) with EM fitting |
 | `mle` | — | MLE position inference via grid search + golden-section optimization |
 | `simulation` | — | Mr. Market replay engine orchestrating the full pipeline |
+| `cpcv` | — | Combinatorial Purged Cross-Validation (López de Prado): measures VWAP slippage & price impact vs. real historical data across out-of-sample folds |
 
 ### Production-Grade Modules (zero-copy, NUMA-pinned, hardware-bypass)
 
@@ -190,6 +191,50 @@ cargo run --release -- run \
 
 If MemoryDB is unavailable, the system automatically falls back to an in-memory store.
 
+### CPCV Robustness Testing (VWAP Slippage & Price Impact)
+
+Measure the bookmaker's execution quality against real historical data using
+Marcos López de Prado's Combinatorial Purged Cross-Validation (CPCV)
+procedure (*Advances in Financial Machine Learning*, Ch. 12). The event
+history is partitioned into `N` contiguous groups; every `C(N,k)`
+combination of `k` groups is held out as a purged & embargoed
+out-of-sample test set while the GMM hidden-state model is fit strictly
+on the remaining (non-overlapping) training groups. For each combination,
+the bookmaker replays the test set and its fills are compared against the
+real historical VWAP (slippage, in bps) and real historical price impact
+(Kyle's-lambda regression Δp on signed order flow). The per-combination
+results are then reconstructed into `φ = C(N-1,k-1)` complete,
+non-overlapping backtest paths — giving a *distribution* of out-of-sample
+performance instead of a single, easily-overfit backtest number:
+
+```bash
+cargo run --release -- cpcv \
+  --symbol AAPL \
+  --n-groups 6 \
+  --k-test-groups 2 \
+  --purge-window 10 \
+  --embargo-pct 0.01 \
+  --n-events 5000
+```
+
+Or against real IEX historical data, saving the full report to JSON:
+
+```bash
+cargo run --release -- cpcv \
+  --symbol AAPL \
+  --data-file ./data/iex/20240115_TOPS.pcap.gz \
+  --n-groups 6 \
+  --k-test-groups 2 \
+  --output cpcv_report.json
+```
+
+The printed report includes the mean/std/median/min/max VWAP slippage
+(bps) and the mean/std of `λ_delta` (simulated minus real price impact)
+across all `φ` reconstructed paths, plus a per-path breakdown — following
+López de Prado's "plateaus, not peaks" philosophy: a robust bookmaker
+configuration should show low dispersion across paths, not just a good
+score on one lucky historical split.
+
 ## CLI Options
 
 ### `run` — Full Simulation
@@ -217,6 +262,24 @@ If MemoryDB is unavailable, the system automatically falls back to an in-memory 
 | `--memorydb-port` | `6379` | MemoryDB port |
 | `--memorydb-tls` | `false` | Use TLS for MemoryDB |
 | `--memorydb-token` | — | MemoryDB auth token |
+| `-o, --output` | — | Output JSON report path |
+
+### `cpcv` — Combinatorial Purged Cross-Validation
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--symbol` | `AAPL` | Symbol to evaluate |
+| `-v, --adv` | `10000000` | Average daily volume (shares) |
+| `-r, --sofr` | `0.0535` | SOFR base rate |
+| `-g, --gamma` | `0.015` | Risk aversion parameter γ |
+| `-k, --kappa` | `2.1` | Liquidity parameter κ |
+| `--fill-prob` | `0.3` | Fill probability when quote is crossed |
+| `-N, --n-groups` | `6` | Number of contiguous groups N |
+| `-K, --k-test-groups` | `2` | Number of groups k held out as the test set per combination |
+| `--purge-window` | `10` | Event indices purged before each test block |
+| `--embargo-pct` | `0.01` | Fraction of samples embargoed after each test block |
+| `-d, --data-file` | — | Path to IEX PCAP/CSV file |
+| `-n, --n-events` | `3000` | Synthetic events (if no data file) |
 | `-o, --output` | — | Output JSON report path |
 
 ### `live` — Live Production Orchestrator

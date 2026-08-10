@@ -135,6 +135,21 @@ pub struct SimulationResult {
     pub final_quote: Option<BookQuote>,
 }
 
+/// Intermediate output of the event-replay phase (Phase 3), used by both
+/// the standard in-sample `run()` and the out-of-sample `run_oos()`
+/// (Task: CPCV) so the replay loop is written exactly once.
+struct ReplayOutput {
+    fills: Vec<FillRecord>,
+    current_quote: Option<BookQuote>,
+    n_quotes: usize,
+    n_rejections: usize,
+    n_hedges: usize,
+    spread_revenue: f64,
+    adverse_selection_cost: f64,
+    hedging_cost: f64,
+    last_mid: f64,
+}
+
 /// The Mr. Market simulation engine.
 pub struct MrMarketSimulation {
     config: SimulationConfig,
@@ -175,6 +190,11 @@ impl MrMarketSimulation {
     }
 
     /// Run the full simulation pipeline on a set of market events.
+    ///
+    /// This is the standard in-sample path: the GMM is fit on `events`
+    /// and then the same `events` slice is replayed through the
+    /// bookmaking engine. For out-of-sample evaluation (Task: CPCV),
+    /// see `run_oos`.
     pub async fn run(
         &mut self,
         events: &[MarketEvent],
@@ -186,6 +206,47 @@ impl MrMarketSimulation {
             events.len()
         );
 
+        let (gmm, features) = self.fit_phase(events, vector_store).await;
+        let replay = self.replay_phase(events, &gmm);
+        self.finalize(events.len(), gmm, features, replay)
+    }
+
+    /// Run the simulation with a strict train/test split (Task: CPCV).
+    ///
+    /// The GMM hidden-state model is fit exclusively on `train_events`
+    /// (the purged & embargoed training set produced by
+    /// `cpcv::splitter::CpcvSplitter`), and then the bookmaking engine
+    /// replays `test_events` (the held-out combinatorial test set) using
+    /// that frozen, out-of-sample model. This is what makes the
+    /// resulting VWAP slippage / price-impact metrics genuinely
+    /// out-of-sample rather than a fit-on-the-same-data leak.
+    pub async fn run_oos(
+        &mut self,
+        train_events: &[MarketEvent],
+        test_events: &[MarketEvent],
+        vector_store: &mut VectorStore,
+    ) -> SimulationResult {
+        info!(
+            "Starting Mr. Market OOS simulation for {}: {} train events, {} test events",
+            self.config.symbol,
+            train_events.len(),
+            test_events.len()
+        );
+
+        let (gmm, _train_features) = self.fit_phase(train_events, vector_store).await;
+        let test_features = extract_features(test_events, &self.config.symbol, self.config.adv);
+        let replay = self.replay_phase(test_events, &gmm);
+        self.finalize(test_events.len(), gmm, test_features, replay)
+    }
+
+    /// Phase 1 + 2: extract order-flow features from `events`, persist
+    /// them to the vector store, and fit the 3-component GMM hidden-state
+    /// model via EM.
+    async fn fit_phase(
+        &mut self,
+        events: &[MarketEvent],
+        vector_store: &mut VectorStore,
+    ) -> (GmmModel, Vec<FeatureVector>) {
         // ── Phase 1: Feature extraction & storage ──────────────────────
         let features = extract_features(events, &self.config.symbol, self.config.adv);
         info!("Extracted {} feature vectors", features.len());
@@ -216,7 +277,12 @@ impl MrMarketSimulation {
             }
         }
 
-        // ── Phase 3: Event replay through bookmaking engine ───────────
+        (gmm, features)
+    }
+
+    /// Phase 3: replay `events` through the bookmaking engine using the
+    /// given (possibly out-of-sample) `gmm`, simulating fills and hedges.
+    fn replay_phase(&mut self, events: &[MarketEvent], gmm: &GmmModel) -> ReplayOutput {
         let mut fills = Vec::new();
         let mut current_quote: Option<BookQuote> = None;
         let mut n_quotes = 0usize;
@@ -403,6 +469,41 @@ impl MrMarketSimulation {
             }
         }
 
+        ReplayOutput {
+            fills,
+            current_quote,
+            n_quotes,
+            n_rejections,
+            n_hedges,
+            spread_revenue,
+            adverse_selection_cost,
+            hedging_cost,
+            last_mid,
+        }
+    }
+
+    /// Phase 4 + 5: run MLE position inference against the fitted `gmm`
+    /// and `features`, then roll up the final P&L breakdown from the
+    /// `replay` output into a `SimulationResult`.
+    fn finalize(
+        &mut self,
+        n_events: usize,
+        gmm: GmmModel,
+        features: Vec<FeatureVector>,
+        replay: ReplayOutput,
+    ) -> SimulationResult {
+        let ReplayOutput {
+            fills,
+            current_quote,
+            n_quotes,
+            n_rejections,
+            n_hedges,
+            spread_revenue,
+            adverse_selection_cost,
+            hedging_cost,
+            last_mid,
+        } = replay;
+
         // ── Phase 4: MLE position inference ────────────────────────────
         let ll_params = LikelihoodParams {
             spot_price: if last_mid > 0.0 { last_mid } else { 150.0 },
@@ -468,7 +569,7 @@ impl MrMarketSimulation {
 
         SimulationResult {
             symbol: self.config.symbol.clone(),
-            n_events: events.len(),
+            n_events,
             n_features: features.len(),
             gmm,
             mle_result,
