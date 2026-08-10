@@ -127,7 +127,7 @@ impl RawDropCopyListener {
 
         // If no next message found, check if we have a complete message
         // by looking for the CheckSum tag "10="
-        for i in 9..data.len().saturating_sub(7) {
+        for i in 9..data.len().saturating_sub(2) {
             if &data[i..i + 3] == b"10=" {
                 // Find the SOH after the checksum
                 for j in i + 3..data.len() {

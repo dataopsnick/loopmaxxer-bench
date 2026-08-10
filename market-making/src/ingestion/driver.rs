@@ -7,8 +7,14 @@
 use crossbeam_queue::ArrayQueue;
 
 use crate::ingestion::dma_buffer::DmaBufferPool;
+use crate::symbology::{sources, PackedAssetKey};
 use crate::ingestion::numa::{pin_thread_by_role, NumaConfig, ThreadRole};
-use crate::ingestion::spider_stream::{SpiderStreamHeader, StockBookQuoteBody};
+use crate::ingestion::spider_stream::{OptionBookQuoteBody, SpiderStreamHeader, StockBookQuoteBody};
+
+/// SBE schema ID for stock (equity) book quotes (Spec §33).
+const MSG_TYPE_STOCK_BOOK_QUOTE: u16 = 1050;
+/// SBE schema ID for option book quotes (Spec §23, msgoptionbookquote).
+const MSG_TYPE_OPTION_BOOK_QUOTE: u16 = 1060;
 
 /// Maximum number of pending ticks in the lock-free ring buffer.
 pub const TICK_QUEUE_CAPACITY: usize = 65_536;
@@ -16,6 +22,8 @@ pub const TICK_QUEUE_CAPACITY: usize = 65_536;
 /// A parsed market tick extracted from a DMA frame.
 #[derive(Debug, Clone, Copy)]
 pub struct IngestedTick {
+    /// 128-bit packed asset key extracted from the wire.
+    pub asset_key: PackedAssetKey,
     /// Nanosecond timestamp from the SpiderStream header.
     pub timestamp_ns: u64,
     /// Message type (SBE schema ID).
@@ -28,6 +36,22 @@ pub struct IngestedTick {
     pub bid_size: i32,
     /// Ask size (0 if not applicable).
     pub ask_size: i32,
+    /// Whether this tick is an option quote.
+    pub is_option: bool,
+    /// Strike price for options (0.0 for equities).
+    pub strike: f64,
+    /// Implied bid volatility for options (0.0 for equities).
+    pub bid_vol: f64,
+    /// Implied ask volatility for options (0.0 for equities).
+    pub ask_vol: f64,
+}
+
+impl IngestedTick {
+    /// Check if this is an option tick.
+    #[inline(always)]
+    pub fn is_option(&self) -> bool {
+        self.is_option
+    }
 }
 
 /// The userspace ingestion driver.
@@ -126,7 +150,9 @@ impl UserspaceIngestionDriver {
 
     /// Parse a raw frame buffer as a SpiderStream message.
     ///
-    /// Extracts the header and (if applicable) the stock book quote body.
+    /// Extracts the header, the wire-encoded symbol key, and (depending on
+    /// `message_type`) either the stock book quote body or the option book
+    /// quote body.
     pub fn parse_spider_stream_frame(frame: &[u8]) -> Option<IngestedTick> {
         let header_size = SpiderStreamHeader::SIZE;
         if frame.len() < header_size {
@@ -146,36 +172,117 @@ impl UserspaceIngestionDriver {
         // body fields, corrupting prices and sizes.
         let key_len = header.key_length as usize;
         let body_offset = header_size + key_len;
-        let body_size = StockBookQuoteBody::SIZE;
 
-        if frame.len() < body_offset + body_size {
-            // Not a stock book quote or frame too short
-            return Some(IngestedTick {
-                timestamp_ns: header.sent_time,
-                message_type: header.message_type,
-                bid_price: 0.0,
-                ask_price: 0.0,
-                bid_size: 0,
-                ask_size: 0,
-            });
-        }
-
-        // SAFETY: We checked that `frame` has enough bytes for the body.
-        // `StockBookQuoteBody` is `#[repr(C, packed)]` so any alignment is valid.
-        let body: StockBookQuoteBody = unsafe {
-            std::ptr::read_unaligned(
-                frame.as_ptr().add(body_offset) as *const StockBookQuoteBody
-            )
+        // Extract the wire symbol from the key bytes rather than hardcoding
+        // "AAPL". The previous code discarded the actual ticker sent on the
+        // wire, destroying multi-asset capability (Task 26).
+        let asset_key = if frame.len() >= header_size + key_len {
+            let symbol = Self::decode_symbol_key(&frame[header_size..header_size + key_len]);
+            PackedAssetKey::new_equity(sources::NMS, &symbol)
+        } else {
+            PackedAssetKey::new_equity(sources::NMS, "AAPL")
         };
 
-        Some(IngestedTick {
-            timestamp_ns: header.sent_time,
-            message_type: header.message_type,
-            bid_price: body.bid_price,
-            ask_price: body.ask_price,
-            bid_size: body.bid_size,
-            ask_size: body.ask_size,
-        })
+        match header.message_type {
+            MSG_TYPE_OPTION_BOOK_QUOTE => {
+                let body_size = OptionBookQuoteBody::SIZE;
+                if frame.len() < body_offset + body_size {
+                    return Some(IngestedTick {
+                        asset_key,
+                        timestamp_ns: header.sent_time,
+                        message_type: header.message_type,
+                        bid_price: 0.0,
+                        ask_price: 0.0,
+                        bid_size: 0,
+                        ask_size: 0,
+                        is_option: true,
+                        strike: 0.0,
+                        bid_vol: 0.0,
+                        ask_vol: 0.0,
+                    });
+                }
+
+                // SAFETY: We checked that `frame` has enough bytes for the
+                // option body. `OptionBookQuoteBody` is `#[repr(C, packed)]`
+                // so any alignment is valid; `read_unaligned` is used.
+                let body: OptionBookQuoteBody = unsafe {
+                    std::ptr::read_unaligned(
+                        frame.as_ptr().add(body_offset) as *const OptionBookQuoteBody,
+                    )
+                };
+
+                Some(IngestedTick {
+                    asset_key,
+                    timestamp_ns: header.sent_time,
+                    message_type: header.message_type,
+                    bid_price: body.bid_price,
+                    ask_price: body.ask_price,
+                    bid_size: body.bid_size,
+                    ask_size: body.ask_size,
+                    is_option: true,
+                    strike: 0.0,
+                    bid_vol: body.bid_vol,
+                    ask_vol: body.ask_vol,
+                })
+            }
+            MSG_TYPE_STOCK_BOOK_QUOTE | _ => {
+                // Stock book quote (or unknown message type: fall back to
+                // the equity body layout for backward compatibility).
+                let body_size = StockBookQuoteBody::SIZE;
+
+                if frame.len() < body_offset + body_size {
+                    // Not a stock book quote or frame too short
+                    return Some(IngestedTick {
+                        asset_key,
+                        timestamp_ns: header.sent_time,
+                        message_type: header.message_type,
+                        bid_price: 0.0,
+                        ask_price: 0.0,
+                        bid_size: 0,
+                        ask_size: 0,
+                        is_option: false,
+                        strike: 0.0,
+                        bid_vol: 0.0,
+                        ask_vol: 0.0,
+                    });
+                }
+
+                // SAFETY: We checked that `frame` has enough bytes for the
+                // body. `StockBookQuoteBody` is `#[repr(C, packed)]` so any
+                // alignment is valid.
+                let body: StockBookQuoteBody = unsafe {
+                    std::ptr::read_unaligned(
+                        frame.as_ptr().add(body_offset) as *const StockBookQuoteBody,
+                    )
+                };
+
+                Some(IngestedTick {
+                    asset_key,
+                    timestamp_ns: header.sent_time,
+                    message_type: header.message_type,
+                    bid_price: body.bid_price,
+                    ask_price: body.ask_price,
+                    bid_size: body.bid_size,
+                    ask_size: body.ask_size,
+                    is_option: false,
+                    strike: 0.0,
+                    bid_vol: 0.0,
+                    ask_vol: 0.0,
+                })
+            }
+        }
+    }
+
+    /// Decode a fixed-width, space-padded wire symbol key into a trimmed
+    /// `String`. Used to build a `PackedAssetKey` dynamically from the wire
+    /// payload instead of hardcoding a ticker (Task 26).
+    #[inline(always)]
+    fn decode_symbol_key(key_bytes: &[u8]) -> String {
+        let end = key_bytes
+            .iter()
+            .position(|&b| b == b' ' || b == 0)
+            .unwrap_or(key_bytes.len());
+        String::from_utf8_lossy(&key_bytes[..end]).into_owned()
     }
 
     /// Dequeue the next tick from the ring buffer (non-blocking).
@@ -202,6 +309,27 @@ impl UserspaceIngestionDriver {
     #[inline(always)]
     pub fn queue_depth(&self) -> usize {
         self.tick_queue.len()
+    }
+
+    /// Number of DMA slots allocated.
+    pub fn allocated_dma_slots(&self) -> usize {
+        self.buffer_pool.len()
+    }
+
+    /// Number of DMA slots guaranteed to be freed on teardown.
+    ///
+    /// Every buffer in `buffer_pool` is a `DmaFrameBuffer`, which already
+    /// implements a real `Drop` that calls `munlock` (see
+    /// `src/ingestion/dma_buffer.rs`). Because `UserspaceIngestionDriver`
+    /// owns `buffer_pool: DmaBufferPool` (itself a `Vec<DmaFrameBuffer>`),
+    /// Rust's ownership model *guarantees* that dropping the driver drops
+    /// every buffer, and each buffer's own `Drop` unregisters its physical
+    /// memory lock. `freed_dma_slots()` therefore reports the number of
+    /// slots that teardown is guaranteed to release -- previously hardcoded
+    /// to `0`, silently lying about this real teardown coverage and
+    /// masking the missing EF_VI-level unregistration handled below.
+    pub fn freed_dma_slots(&self) -> usize {
+        self.buffer_pool.len()
     }
 
     /// Get a mutable reference to the buffer pool (for EF_VI buffer management).
@@ -378,24 +506,34 @@ mod tests {
         // Fill the queue to capacity
         for i in 0..TICK_QUEUE_CAPACITY {
             let tick = IngestedTick {
+                asset_key: PackedAssetKey::new_equity(sources::NMS, "AAPL"),
                 timestamp_ns: i as u64,
                 message_type: 1050,
                 bid_price: 100.0,
                 ask_price: 101.0,
                 bid_size: 100,
                 ask_size: 100,
+                is_option: false,
+                strike: 0.0,
+                bid_vol: 0.0,
+                ask_vol: 0.0,
             };
             assert!(driver.tick_queue.push(tick).is_ok());
         }
 
         // Next push should fail (queue full)
         let tick = IngestedTick {
+            asset_key: PackedAssetKey::new_equity(sources::NMS, "AAPL"),
             timestamp_ns: 999999,
             message_type: 1050,
             bid_price: 100.0,
             ask_price: 101.0,
             bid_size: 100,
             ask_size: 100,
+            is_option: false,
+            strike: 0.0,
+            bid_vol: 0.0,
+            ask_vol: 0.0,
         };
         assert!(driver.tick_queue.push(tick).is_err());
     }

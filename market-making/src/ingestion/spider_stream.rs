@@ -74,6 +74,11 @@ pub struct OptionBookQuoteBody {
     pub ask_vol: f64,
 }
 
+impl OptionBookQuoteBody {
+    /// Size of the body in bytes.
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+}
+
 /// Zero-copy cast a byte slice to a SpiderStreamHeader reference.
 ///
 /// # Safety

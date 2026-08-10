@@ -198,8 +198,25 @@ impl ActiveOrchestrator {
         // 1. Volatility lookup via Taylor expansion
         let vol = self.vol_surface.evaluate_vol(tick.spot, tick.strike, tick.expiry);
 
-        // 2. Get current portfolio position (lock-free read)
-        let position = self.portfolio_state.load_delta();
+        // 2. Get current portfolio position for *this specific asset*.
+        // Previously this read the global aggregate delta across all
+        // assets, so inventory accumulated in one instrument (e.g. AAPL)
+        // incorrectly skewed quotes for a completely unrelated instrument
+        // (e.g. TSLA). `load_delta_for_asset` isolates exposure per
+        // `PackedAssetKey` (Task 42).
+        let position = self.portfolio_state.load_delta_for_asset(tick.asset_key);
+
+        // 2b. Refresh the dynamic κ-derived spread multiplier (Spec §27).
+        // Previously `compute_quote` only used the static
+        // `config.liquidity_kappa`, so the online `KappaEstimator` (fed by
+        // confirmed fills via `record_fill`) never actually influenced
+        // quoted spreads (Task 32). `evict_stale` lets the multiplier
+        // decay back toward neutral during quiet periods with no fills,
+        // rather than freezing at the last burst's value.
+        self.kappa_estimator.evict_stale(tick.timestamp_ns);
+        let dynamic_multiplier = self.kappa_estimator.spread_multiplier();
+        self.bookmaker
+            .set_dynamic_spread_multiplier(dynamic_multiplier);
 
         // 3. Compute bid/ask quote through the bookmaker
         let mid = tick.mid_price();

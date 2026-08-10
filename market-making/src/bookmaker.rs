@@ -60,6 +60,14 @@ pub struct Bookmaker {
     sofr_controller: SOFRHedgeController,
     ofi: MicrostructureOFI,
     risk_gate: PreTradeRiskGate,
+    /// Dynamic spread multiplier from the online `KappaEstimator` (Spec §27).
+    ///
+    /// Previously `compute_quote` always used the statically configured
+    /// `config.liquidity_kappa`, so spreads never widened during liquidity
+    /// droughts or tightened during deep markets (Task 32). Defaults to
+    /// `1.0` (neutral) until the orchestrator calls
+    /// `set_dynamic_spread_multiplier`.
+    dynamic_spread_multiplier: f64,
 }
 
 impl Bookmaker {
@@ -77,7 +85,28 @@ impl Bookmaker {
             ofi: MicrostructureOFI::new(config.ofi_decay, config.ofi_multiplier),
             risk_gate,
             config,
+            dynamic_spread_multiplier: 1.0,
         }
+    }
+
+    /// Update the dynamic spread multiplier derived from the online
+    /// `KappaEstimator::spread_multiplier()` (Spec §27). The orchestrator
+    /// calls this on every tick before `compute_quote`, so hot-path
+    /// spread widths reflect real-time fill arrival intensity rather than
+    /// the static `liquidity_kappa` config value alone.
+    #[inline(always)]
+    pub fn set_dynamic_spread_multiplier(&mut self, multiplier: f64) {
+        self.dynamic_spread_multiplier = multiplier;
+    }
+
+    /// Update the margin haircut used in the SOFR reservation price
+    /// calculation (Spec §12). The orchestrator calls this on every tick
+    /// with a haircut dynamically derived from `TimsMarginModel`'s
+    /// 17-scenario cross-asset stress grid, replacing the previously
+    /// inert static `config.margin_haircut` default (Task 23).
+    #[inline(always)]
+    pub fn set_margin_haircut(&mut self, haircut: f64) {
+        self.config.margin_haircut = haircut;
     }
 
     /// Compute the optimal bid/ask quote given current market state.
@@ -118,9 +147,13 @@ impl Bookmaker {
         // 3. Drift-corrected reservation price
         let reservation_adjusted = reservation + ofi_drift;
 
-        // 4. Optimal indifference spread
+        // 4. Optimal indifference spread, scaled by the dynamic κ-derived
+        // spread multiplier (Spec §27). A multiplier > 1.0 widens the
+        // spread when market depth thins (few recent fills); < 1.0
+        // tightens it when the market is deep (many recent fills).
         let spread_width = (2.0 / self.config.risk_aversion_gamma)
-            * (1.0 + (self.config.risk_aversion_gamma / self.config.liquidity_kappa)).ln();
+            * (1.0 + (self.config.risk_aversion_gamma / self.config.liquidity_kappa)).ln()
+            * self.dynamic_spread_multiplier;
 
         let bid_quote = reservation_adjusted - (spread_width / 2.0);
         let ask_quote = reservation_adjusted + (spread_width / 2.0);
@@ -294,6 +327,27 @@ impl KappaEstimator {
 
         // Clamp to sane bounds
         self.kappa = new_kappa.clamp(self.min_kappa, self.max_kappa);
+    }
+
+    /// Evict fills that have fallen outside the sliding time window as of
+    /// `current_ns`, without recording a new fill.
+    ///
+    /// This lets a read-only hot-path caller (the orchestrator, on every
+    /// tick) keep the liquidity signal current even during periods with no
+    /// new fills, so `spread_multiplier()` correctly reflects a market that
+    /// has gone quiet (reverting to the neutral `1.0` multiplier) rather
+    /// than freezing at the last-observed value from a burst of fills.
+    #[inline]
+    pub fn evict_stale(&mut self, current_ns: u64) {
+        let cutoff = current_ns.saturating_sub(self.window_ns);
+        while let Some(&ts) = self.fill_timestamps.front() {
+            if ts < cutoff {
+                self.fill_timestamps.pop_front();
+                self.fill_spreads.pop_front();
+            } else {
+                break;
+            }
+        }
     }
 
     /// Get the current kappa estimate.

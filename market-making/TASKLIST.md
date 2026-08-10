@@ -123,7 +123,7 @@ When we place a resting limit order, we need to know how many contracts are ahea
 3. Calculate the internal software delta (`TX - RX`). If this delta exceeds a hardcoded threshold (e.g., > 3 microseconds), it indicates CPU cache-misses, thread starvation, or GC/OS interrupts. Log this via a lock-free ring buffer to the telemetry thread, and optionally trigger a safe-mode de-risk if latency variance becomes unstable.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>11</id>
     <title>orchestrator.rs:163-165 - Severe bug: KappaEstimator records a fill on every generated quote</title>
     <description><![CDATA[
@@ -134,7 +134,7 @@ When we place a resting limit order, we need to know how many contracts are ahea
 The orchestrator currently assumes every generated quote results in a fill, completely breaking the sliding-window arrival intensity logic of the `KappaEstimator`. `record_fill` must be decoupled from quote generation and only invoked when a confirmed execution report is received (e.g., via a cross-thread signal from the `RawDropCopyListener`).
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>12</id>
     <title>orchestrator.rs:198-201 - Missing SQF Purge trigger on Risk Gate rejection</title>
     <description><![CDATA[
@@ -244,7 +244,7 @@ The `TermStructureBetaEstimator` calculates a penalty widening factor when the t
 `OptionBookQuoteBody` is defined in `spider_stream.rs` but ignored in the parser. The orchestrator expects option ticks (checking `tick.is_option()`), but the ingestion driver currently discards all non-equity packets. Add a branch to parse `message_type` for options, extract `bid_vol`/`ask_vol`, and emit valid option `LiveMarketTick`s.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>22</id>
     <title>orchestrator.rs:175 - Hardcoded time-to-horizon breaks SOFR time-decay dynamics</title>
     <description><![CDATA[
@@ -299,7 +299,7 @@ Spec §6 requires sweeping excess margin to bilateral repo / SOFR deposits at th
 Inside `spawn_hardware_ingest_loop`, when a packet is successfully parsed from the DMA buffer, the `target_asset` is hardcoded to `PackedAssetKey::new_equity(2, "AAPL")`. This destroys the multi-asset capability of the framework. The driver must dynamically read the `symbol` field from the wire (located after the `SpiderStreamHeader` and before the `StockBookQuoteBody`) and encode it into the `PackedAssetKey`.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>27</id>
     <title>listener.rs:135 - Drop Copy TCP stream disconnects on fragmented messages (Buffer Deadlock)</title>
     <description><![CDATA[
@@ -321,7 +321,7 @@ If the FIX drop-copy stream receives a message (or fragment) larger than the rem
 The orchestrator calls `self.sofr_controller.evaluate_delta_hedge` with `time_to_midnight` hardcoded to `0.45`. The Whalley-Wilmott band relies on accurately decaying the remaining intraday SOFR cost. This value must be dynamically calculated on every tick by subtracting the `tick.timestamp_ns` from the daily market close epoch.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>29</id>
     <title>bookmaker.rs:130 - Pre-Trade Risk Gate validated against hardcoded quantity</title>
     <description><![CDATA[
@@ -343,7 +343,7 @@ When generating a `BookQuote`, the bookmaker validates the quotes through the ri
 The `CmtaClearingEngine` and `MarginSweepEngine` were built to minimize TIMS/SPAN haircuts and deploy excess capital to repo/SOFR overnight deposits. However, they are completely unreferenced in the application lifecycle. A scheduled End-Of-Day (EOD) cron job or shutdown hook must be added to the orchestrator/simulation to instantiate these engines, ingest the final `AtomicPortfolioState`, and execute the margin sweep.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>31</id>
     <title>estimator.rs:98-106 - Critical Bug: Term-Structure CAS failure ignores variance update</title>
     <description><![CDATA[
@@ -365,7 +365,7 @@ In `update_term_metrics`, the `covariance_accumulator` is updated via a CAS loop
 The `ActiveOrchestrator` maintains a `KappaEstimator` that dynamically calculates market depth and arrival intensities. However, `self.bookmaker.compute_quote` uses the statically initialized `self.config.liquidity_kappa` to calculate `spread_width`. The dynamically estimated kappa (and `spread_multiplier`) from Spec §27 is never passed into the bookmaker's hot path, leaving the system vulnerable to adverse selection when the order book thins out.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>33</id>
     <title>driver.rs:135 - Memory Corruption: SpiderStream parser hardcodes key length</title>
     <description><![CDATA[
@@ -376,7 +376,7 @@ The `ActiveOrchestrator` maintains a `KappaEstimator` that dynamically calculate
 `parse_spider_stream_frame` calculates the payload offset as `let body_offset = header_size + 12;`, hardcoding the symbol key size to 12 bytes. It ignores the `header.key_length` field explicitly provided in the packet. If an exchange sends a payload with a different key length, the `StockBookQuoteBody` pointer cast reads unaligned, garbage memory, resulting in wildly corrupted prices and sizes feeding into the risk gate.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>34</id>
     <title>em.rs:125 - Math Error: GMM EM Fitter adds regularization to off-diagonal covariance elements</title>
     <description><![CDATA[
@@ -387,7 +387,7 @@ The `ActiveOrchestrator` maintains a `KappaEstimator` that dynamically calculate
 During the M-step of the Expectation-Maximization algorithm, `self.config.regularization` is unconditionally added to every element of the covariance matrix (`covariance[r * dim + c] = sum / nk + self.config.regularization;`). Regularization should only be added to the diagonal elements (`if r == c`). Adding it to off-diagonal elements introduces spurious correlations, destroying the positive semi-definiteness of the matrix and corrupting the trader state classification.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>35</id>
     <title>mapped_writer.rs:72 - Resource Leak: File descriptor leaked during mmap</title>
     <description><![CDATA[
@@ -398,7 +398,7 @@ During the M-step of the Expectation-Maximization algorithm, `self.config.regula
 In `MappedColumnarWriter::new`, `std::mem::forget(file);` is used to keep the file alive for the `mmap` region. This permanently leaks the file descriptor (`fd`). The POSIX `mmap` specification guarantees the mapping remains valid even if the file descriptor is closed immediately after. `file` should be allowed to drop naturally, otherwise the process will eventually exhaust its `ulimit` file descriptor limits in a long-running production environment.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>36</id>
     <title>fix_template.rs:125 - Critical Financial Bug: FIX Tag 44 (Price) omits decimal point</title>
     <description><![CDATA[
@@ -420,7 +420,7 @@ In `set_price`, the float price is multiplied by 10,000 and formatted into the F
 In `query_time_range`, after fetching a list of `keys` via `zrangebyscore`, the code iterates over the keys and sequentially calls `conn.hget(...).await` twice per key. For a query returning 10,000 historical vectors, this triggers 20,000 independent network round-trips. This will block the async executor for seconds or even minutes. This must be refactored to use Redis pipelining (`redis::pipe()`) or batching.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>38</id>
     <title>simulation.rs:395-397 - Simulation Validity Ruined: LCG RNG divisor bug guarantees 100% fill rate</title>
     <description><![CDATA[
@@ -431,7 +431,7 @@ In `query_time_range`, after fetching a list of `keys` via `zrangebyscore`, the 
 The `simple_random` LCG shifts a `u64` right by 11 bits to generate a 53-bit random integer, but then divides it by `u64::MAX as f64` (a 64-bit maximum). The resulting float is bounded to a maximum of roughly `0.000488`. Any `fill_probability` configured above 0.05% will ALWAYS evaluate as true. This guarantees a 100% fill rate for crossed quotes, entirely invalidating the simulation's P&L and adverse selection metrics.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>39</id>
     <title>bookmaker.rs:94-101 - Risk Model Failure: Uses option premium instead of underlying spot</title>
     <description><![CDATA[
@@ -442,7 +442,7 @@ The `simple_random` LCG shifts a `u64` right by 11 bits to generate a 53-bit ran
 `Bookmaker::compute_quote` takes the asset's `mid_price` and passes it directly into `self.sofr_controller.reservation_price` as the `spot_price` parameter. For options, `mid_price` is the option's premium (e.g., $2.00), not the underlying asset's spot price (e.g., $150.00). Because `sofr_financing_cost` uses `position * spot_price * financing_rate`, providing the premium underestimates the overnight capital financing penalty by orders of magnitude.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>40</id>
     <title>tims.rs:155-163 - Margin Model Defect: Cross-asset netting sums meaningless raw deltas</title>
     <description><![CDATA[
@@ -453,7 +453,7 @@ The `simple_random` LCG shifts a `u64` right by 11 bits to generate a 53-bit ran
 In `evaluate_portfolio`, the code attempts to calculate cross-asset netting benefit by summing `p.delta` across the portfolio (`let net_delta: f64 = positions.iter().map(|p| p.delta).sum();`). Adding raw option deltas from uncorrelated assets with drastically different valuations (e.g., AAPL delta + TSLA delta) is mathematically invalid. It must aggregate and net *dollar deltas* (`p.delta * p.spot`) to calculate a coherent margin netting factor.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>41</id>
     <title>likelihood.rs:68 - Financial Math Error: Spread revenue incorrectly scales with inventory size</title>
     <description><![CDATA[
@@ -475,7 +475,7 @@ Spread revenue is earned on transaction flow, not on holding inventory. By multi
 The orchestrator extracts the aggregate net delta of the *entire portfolio* and feeds it into the `Bookmaker` as the instrument-specific inventory. If the system is holding +5,000 delta in AAPL, it will drastically skew TSLA quotes downwards to simulate sell pressure, ignoring that the assets are independent. `AtomicPortfolioState` must be refactored to track and return per-asset inventory vectors.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>43</id>
     <title>cmta.rs:112 - Clearing Engine Failure: Step-out netting algorithm is a no-op</title>
     <description><![CDATA[
@@ -497,7 +497,7 @@ The orchestrator extracts the aggregate net delta of the *entire portfolio* and 
 `UserspaceIngestionDriver` allocates `dma_allocated_memory` via `Vec`, locks it, and registers its physical address to the Solarflare NIC (`ef_memreg_alloc` / `ef_vi_rx_post`). When the driver goes out of scope, the `Vec` is dropped and freed back to the OS. Because there is no `Drop` implementation to halt the NIC (`ef_vi_free`) and unregister the memory (`ef_memreg_free`), the hardware will silently write multi-gigabit line-rate network traffic directly into freed RAM, destroying the host OS state.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>45</id>
     <title>spider_stream.rs:68 - Rust Soundness Bug: Hardware volatile memory masquerading as `'static`</title>
     <description><![CDATA[
@@ -508,7 +508,7 @@ The orchestrator extracts the aggregate net delta of the *entire portfolio* and 
 Casting a raw pointer originating from a volatile hardware DMA buffer into a `&'static` reference is a catastrophic lifetime violation. The NIC will overwrite this exact memory location microseconds later when the ring buffer wraps around. Giving safe Rust code a `'static` reference guarantees use-after-free and data races. The function must bind the output reference to a bounded lifetime `<'a>` tied to the underlying slice.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>46</id>
     <title>sofr.rs:114 - Financial Math Error: Risk aversion penalty ignores underlying spot price (variance scale)</title>
     <description><![CDATA[
@@ -519,7 +519,7 @@ Casting a raw pointer originating from a volatile hardware DMA buffer into a `&'
 In `reservation_price`, the Avellaneda-Stoikov inventory risk penalty is calculated using the lognormal implied volatility (a percentage, e.g., 0.20) squared. The formal model requires the variance of the asset's *dollar price* path ($\sigma_{dollar} = S \cdot \sigma$). Without multiplying the volatility by `_spot_price` before squaring, the resulting risk penalty is artificially reduced by a factor of $S^2$ (e.g., ~22,500x too small for a $150 stock). The market maker will completely fail to skew quotes in response to inventory accumulation.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>47</id>
     <title>orchestrator.rs:159 - Execution Risk: DMA Submission hardcodes Order Quantity to 100 lots</title>
     <description><![CDATA[
@@ -530,7 +530,7 @@ In `reservation_price`, the Avellaneda-Stoikov inventory risk penalty is calcula
 The orchestrator generates outbound `SbeNewOrderSingle` messages with a hardcoded `order_qty` of `100`, completely ignoring the optimal quote sizes calculated by the bookmaker and disregarding the `max_order_qty` configured in the pre-trade risk gate. This forces the system to always quote exactly 100 contracts regardless of available capital, margin limits, or the configuration's maximum boundaries.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>48</id>
     <title>bookmaker.rs:254 - Logic Error: KappaEstimator calculates arrival rate using array capacity instead of time window</title>
     <description><![CDATA[
@@ -541,7 +541,7 @@ The orchestrator generates outbound `SbeNewOrderSingle` messages with a hardcode
 In `recompute_kappa`, the expected number of fills (which should represent $\lambda \cdot \Delta t$) is set to `self.window_size as f64`. `window_size` is the maximum ring buffer capacity (e.g., 200), not the time horizon. The arrival rate calculation `ratio = n_fills / expected` is completely decoupled from real-time duration (`window_ns`). This causes $\kappa_i(t)$ to randomly drift based on the internal data structure's memory limit rather than market microstructure intensity.
 ]]></description>
   </task>
-  <task status="IN-PROGRESS">
+  <task status="IN-REVIEW">">
     <id>49</id>
     <title>sofr.rs:77 - Financial Logic Error: Short rebate is treated as a capital penalty instead of a cash benefit</title>
     <description><![CDATA[

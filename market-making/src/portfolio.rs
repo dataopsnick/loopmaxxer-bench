@@ -3,7 +3,11 @@
 //! Lock-free, cache-line-aligned atomic containers for real-time
 //! portfolio Greek exposure and SOFR cash balance tracking.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
+
+use crate::symbology::{sources, PackedAssetKey};
 
 /// f64 data stored as AtomicU64 bits for lock-free updates.
 pub struct AtomicFloat {
@@ -171,12 +175,24 @@ impl Default for AlignedGreeksTracker {
 }
 
 /// Atomic portfolio state used in the integrated bookmaking engine (Spec §20).
+///
+/// Tracks both a global (all-asset) aggregate delta -- preserved for
+/// backward compatibility with callers that have no per-asset context
+/// (e.g. the FIX drop-copy parser, which does not currently decode
+/// Tag 55/Symbol) -- and a per-asset delta map keyed by `PackedAssetKey`.
+///
+/// Per-asset tracking fixes Task 42: previously the orchestrator fed the
+/// *global* aggregate delta into `Bookmaker::compute_quote` for every
+/// instrument, so inventory accumulated in one asset (e.g. AAPL) would
+/// incorrectly skew quotes for a completely unrelated asset (e.g. TSLA).
 #[repr(align(64))]
 pub struct AtomicPortfolioState {
     pub net_delta: AtomicU64,
     pub net_gamma: AtomicU64,
     pub net_vega: AtomicU64,
     pub sofr_cash: AtomicU64,
+    /// Per-asset delta exposure, keyed by `PackedAssetKey.data`.
+    per_asset_delta: RwLock<HashMap<u128, f64>>,
 }
 
 impl AtomicPortfolioState {
@@ -186,12 +202,38 @@ impl AtomicPortfolioState {
             net_gamma: AtomicU64::new(0.0f64.to_bits()),
             net_vega: AtomicU64::new(0.0f64.to_bits()),
             sofr_cash: AtomicU64::new(initial_cash.to_bits()),
+            per_asset_delta: RwLock::new(HashMap::new()),
         }
     }
 
+    /// Default bucket for legacy, asset-agnostic delta updates.
+    ///
+    /// Matches the codebase-wide convention (CLI default symbol, ingestion
+    /// fallback symbol, orchestrator demo symbol) that the single-asset
+    /// legacy default instrument is AAPL on the NMS source.
+    #[inline(always)]
+    fn default_asset_key() -> PackedAssetKey {
+        PackedAssetKey::new_equity(sources::NMS, "AAPL")
+    }
+
+    /// Load the global (all-asset) aggregate delta.
     #[inline(always)]
     pub fn load_delta(&self) -> f64 {
         f64::from_bits(self.net_delta.load(Ordering::Acquire))
+    }
+
+    /// Load the delta exposure attributed to a specific asset.
+    ///
+    /// Returns `0.0` if the asset has no recorded exposure.
+    #[inline(always)]
+    pub fn load_delta_for_asset(&self, asset_key: PackedAssetKey) -> f64 {
+        let key_data: u128 = asset_key.data;
+        self.per_asset_delta
+            .read()
+            .expect("per_asset_delta lock poisoned")
+            .get(&key_data)
+            .copied()
+            .unwrap_or(0.0)
     }
 
     #[inline(always)]
@@ -199,31 +241,41 @@ impl AtomicPortfolioState {
         f64::from_bits(self.sofr_cash.load(Ordering::Acquire))
     }
 
+    /// Add to the global aggregate delta, attributing the change to the
+    /// legacy default asset bucket (backward-compatible with callers that
+    /// have no per-asset context, e.g. the drop-copy listener).
     #[inline(always)]
     pub fn add_delta(&self, val: f64) {
-        let mut bits = self.net_delta.load(Ordering::Relaxed);
-        loop {
-            let current = f64::from_bits(bits);
-            let next = current + val;
-            match self.net_delta.compare_exchange_weak(
-                bits,
-                next.to_bits(),
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(actual) => bits = actual,
-            }
-        }
+        self.add_delta_for_asset(Self::default_asset_key(), val);
+    }
+
+    /// Add to both the global aggregate delta and the per-asset delta for
+    /// `asset_key`. This is the primary entry point for asset-aware callers
+    /// (e.g. the orchestrator processing a tick for a known instrument).
+    #[inline(always)]
+    pub fn add_delta_for_asset(&self, asset_key: PackedAssetKey, val: f64) {
+        Self::add_float_atomic(&self.net_delta, val);
+
+        let key_data: u128 = asset_key.data;
+        let mut map = self
+            .per_asset_delta
+            .write()
+            .expect("per_asset_delta lock poisoned");
+        *map.entry(key_data).or_insert(0.0) += val;
     }
 
     #[inline(always)]
     pub fn add_cash(&self, val: f64) {
-        let mut bits = self.sofr_cash.load(Ordering::Relaxed);
+        Self::add_float_atomic(&self.sofr_cash, val);
+    }
+
+    #[inline(always)]
+    fn add_float_atomic(target: &AtomicU64, val: f64) {
+        let mut bits = target.load(Ordering::Relaxed);
         loop {
             let current = f64::from_bits(bits);
             let next = current + val;
-            match self.sofr_cash.compare_exchange_weak(
+            match target.compare_exchange_weak(
                 bits,
                 next.to_bits(),
                 Ordering::Release,

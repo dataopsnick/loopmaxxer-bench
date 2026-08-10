@@ -147,8 +147,14 @@ impl SOFRHedgeController {
             * (spot_price * volatility).powi(2)
             * time_to_horizon_years;
 
-        // SOFR capital carry penalty (marginal cost of holding one more unit)
-        let sofr_penalty = position.signum()
+        // SOFR capital carry penalty (marginal cost of holding one more unit).
+        // Rust's `f64::signum()` returns `1.0` for `+0.0` (IEEE 754 treats
+        // positive zero as non-negative), so a perfectly flat position was
+        // incorrectly assigned a full positive SOFR carry bias here. A
+        // flat position carries no directional overnight financing
+        // obligation, so the sign must be exactly `0.0` when `position == 0.0`.
+        let position_sign = if position == 0.0 { 0.0 } else { position.signum() };
+        let sofr_penalty = position_sign
             * (self.sofr_base_rate + margin_haircut + borrow_premium)
             * time_to_horizon;
 
