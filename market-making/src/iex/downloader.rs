@@ -76,7 +76,14 @@ impl IexDownloader {
 
     /// Fetch metadata from the HIST API endpoint if `base_url` points to an API endpoint.
     pub fn fetch_hist_metadata(&self) -> Result<HashMap<String, Vec<HistFeedEntry>>, String> {
-        let response = reqwest::blocking::get(&self.base_url)
+        let client = reqwest::blocking::Client::builder()
+            .no_gzip()
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+        let response = client
+            .get(&self.base_url)
+            .send()
             .map_err(|e| format!("HTTP request to HIST API failed: {}", e))?;
 
         if !response.status().is_success() {
@@ -182,8 +189,15 @@ impl IexDownloader {
 
         info!("Downloading IEX {} data for {}: {}", feed.suffix(), date, url);
 
-        // Use blocking reqwest to download
-        let response = reqwest::blocking::get(&url)
+        // Use blocking reqwest with .no_gzip() to download raw .pcap.gz bytes without auto-decompression
+        let client = reqwest::blocking::Client::builder()
+            .no_gzip()
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+        let response = client
+            .get(&url)
+            .send()
             .map_err(|e| format!("HTTP request failed: {}", e))?;
 
         if !response.status().is_success() {
