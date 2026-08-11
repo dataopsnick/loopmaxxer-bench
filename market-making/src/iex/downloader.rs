@@ -9,7 +9,10 @@
 use serde::Deserialize;
 use reqwest::header::{ACCEPT_ENCODING, CACHE_CONTROL};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::copy;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tracing::{info, warn};
 
 /// Item returned by IEX HIST API (`https://iextrading.com/api/1.0/hist`).
@@ -190,13 +193,14 @@ impl IexDownloader {
 
         info!("Downloading IEX {} data for {}: {}", feed.suffix(), date, url);
 
-        // Use blocking reqwest with .no_gzip() to download raw .pcap.gz bytes without auto-decompression
+        // Build client with 10-minute timeout and disabled auto-gzip
         let client = reqwest::blocking::Client::builder()
             .no_gzip()
+            .timeout(Duration::from_secs(6000))
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-        let response = client
+        let mut response = client
             .get(&url)
             .header(ACCEPT_ENCODING, "gzip")
             .header(CACHE_CONTROL, "no-transform")
@@ -211,18 +215,14 @@ impl IexDownloader {
             ));
         }
 
-        let bytes = response
-            .bytes()
-            .map_err(|e| format!("Failed to read response body: {}", e))?;
+        // Stream directly to disk rather than buffering in RAM
+        let mut file = File::create(&dest)
+            .map_err(|e| format!("Failed to create file {}: {}", dest.display(), e))?;
 
-        std::fs::write(&dest, &bytes)
-            .map_err(|e| format!("Failed to write file {}: {}", dest.display(), e))?;
+        let bytes_written = copy(&mut response, &mut file)
+            .map_err(|e| format!("Failed to write download stream to {}: {}", dest.display(), e))?;
 
-        info!(
-            "Downloaded {} bytes to {}",
-            bytes.len(),
-            dest.display()
-        );
+        info!("Downloaded {} bytes to {}", bytes_written, dest.display());
 
         Ok(dest)
     }
