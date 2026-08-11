@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  # Isolated Rust workspace
+  workspace:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    volumes:
+      - .:/workspace
+      # Cache Cargo registry and target folders on the host to speed up subsequent builds
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/workspace/target
+    environment:
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=mock-key
+      - AWS_SECRET_ACCESS_KEY=mock-secret
+      - MEMORYDB_ENDPOINT=memorydb-emu
+      - MEMORYDB_PORT=6379
+    depends_on:
+      - memorydb-emu
+    networks:
+      - local-sandbox
+
+  # MemoryDB Emulator (Redis protocol)
+  memorydb-emu:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    # Run in-memory only (disable disk persistence) for optimal test speed
+    command: redis-server --save "" --appendonly no
+    networks:
+      - local-sandbox
+
+volumes:
+  cargo-cache:
+  target-cache:
+
+networks:
+  local-sandbox:
+    driver: bridge

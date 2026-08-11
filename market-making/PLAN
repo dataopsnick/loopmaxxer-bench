@@ -183,4 +183,3 @@ cargo bench --bench hot_path
 
 # Run live orchestrator (macOS dev)
 cargo run --release -- live --symbol AAPL --n-ticks 10000
-```
