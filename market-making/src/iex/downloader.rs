@@ -7,6 +7,7 @@
 //! for all US equities. Files are named by date, e.g. "20240115_PCAP.gz".
 
 use serde::Deserialize;
+use reqwest::header::{ACCEPT_ENCODING, CACHE_CONTROL};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
@@ -197,6 +198,8 @@ impl IexDownloader {
 
         let response = client
             .get(&url)
+            .header(ACCEPT_ENCODING, "gzip")
+            .header(CACHE_CONTROL, "no-transform")
             .send()
             .map_err(|e| format!("HTTP request failed: {}", e))?;
 
