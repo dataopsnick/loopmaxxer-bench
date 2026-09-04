@@ -29,11 +29,11 @@ $HOME/venv/bin/pip install -q fastapi uvicorn httpx gitingest
 # 2.5 Initialize and install deepsec
 echo "Initializing and installing deepsec in the app workspace..."
 cd $HOME/app
-if [ ! -d ".deepsec" ]; then
-  npx -y deepsec init --yes
-fi
-cd .deepsec
-npx -y pnpm install
+# if [ ! -d ".deepsec" ]; then
+#  npx -y deepsec init --yes
+# fi
+# cd .deepsec
+# npx -y pnpm install
 cd $HOME/app
 
 # 3. Start and verify Python Proxy
