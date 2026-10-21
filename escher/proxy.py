@@ -151,6 +151,7 @@ def log_traffic(message: str):
             'Authorization: Bearer [REDACTED]', message)
         message = re.sub(r'(?i)ghp_[a-zA-Z0-9]+', '[REDACTED_GITHUB_TOKEN]', message)
         message = re.sub(r'(?i)sk-or-[a-zA-Z0-9\-]+', '[REDACTED_OPENROUTER_KEY]', message)
+        message = re.sub(r'eyJ[a-zA-Z0-9_\-\.]{30,}', '[REDACTED_TUNNEL_TOKEN]', message)
 
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         log_line = f"[{timestamp}] {message}\n"
@@ -414,6 +415,72 @@ def bootstrap_system():
         print("🤖 [System] Auto-bootstrapped successfully via environment configuration.")
     except Exception as e:
         print(f"⚠️ [System] Auto-bootstrap failed: {e}")
+
+def get_tunnel_info() -> dict:
+    """Returns current cloudflared tunnel and Hugging Face Space ingress details."""
+    public_url = os.getenv("PUBLIC_INGRESS_URL", "")
+    if not public_url and os.path.exists("PUBLIC_URL.txt"):
+        try:
+            with open("PUBLIC_URL.txt", "r", encoding="utf-8") as f:
+                public_url = f.read().strip()
+        except Exception:
+            pass
+
+    space_host = os.getenv("SPACE_HOST", "")
+    hf_url = f"https://{space_host}" if space_host else None
+    mode = "named" if os.getenv("CF_TUNNEL_TOKEN") else ("quick_tunnel" if public_url else "disabled")
+
+    return {
+        "mode": mode,
+        "tunnel_url": public_url or None,
+        "hf_space_wake_url": hf_url,
+        "webhook_endpoint": f"{public_url or hf_url}/webhook" if (public_url or hf_url) else None,
+    }
+
+
+async def sync_github_webhook():
+    """Optionally auto-registers or updates the GitHub repository webhook on startup."""
+    if os.getenv("AUTO_REGISTER_WEBHOOK", "false").lower() != "true":
+        return
+    state = await async_load_state()
+    git_token = get_github_token(state)
+    info = get_tunnel_info()
+    target_webhook = info.get("webhook_endpoint")
+    if not git_token or git_token == "none" or not target_webhook:
+        return
+
+    owner = os.getenv("REPO_OWNER", "dataopsnick")
+    repo = os.getenv("REPO_NAME", "loopmaxxer-bench")
+    headers = {
+        "Authorization": f"token {git_token}",
+        "Accept": "application/vnd.github+json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(f"https://api.github.com/repos/{owner}/{repo}/hooks", headers=headers)
+            if r.status_code != 200:
+                return
+            hooks = r.json()
+            config = {"url": target_webhook, "content_type": "json"}
+            if WEBHOOK_SECRET:
+                config["secret"] = WEBHOOK_SECRET
+            for h in hooks:
+                if h.get("config", {}).get("url", "").endswith("/webhook"):
+                    await client.patch(
+                        f"https://api.github.com/repos/{owner}/{repo}/hooks/{h['id']}",
+                        json={"config": config, "active": True},
+                        headers=headers,
+                    )
+                    print(f"🔗 [Webhook] Updated GitHub webhook #{h['id']} -> {target_webhook}")
+                    return
+            await client.post(
+                f"https://api.github.com/repos/{owner}/{repo}/hooks",
+                json={"name": "web", "active": True, "events": ["pull_request", "workflow_run", "gollum"], "config": config},
+                headers=headers,
+            )
+            print(f"🔗 [Webhook] Created new GitHub webhook -> {target_webhook}")
+    except Exception as e:
+        print(f"⚠️ [Webhook] Auto-registration failed: {e}")
 
 
 # ============================================================================
@@ -1204,6 +1271,7 @@ class CommandHandlers:
     def __init__(self, sse: SSEStream):
         self._sse = sse
         self._special_routes: list[tuple[Callable[[str], bool], Callable]] = [
+            (self._match_tunnel, self.handle_tunnel),
             (self._match_reset, self.handle_reset),
             (self._match_create_issues, self.handle_create_issues),
             (self._match_review_prs, self.handle_review_prs),
@@ -1240,6 +1308,8 @@ class CommandHandlers:
         return None
 
     # --- Matchers ---
+    def _match_tunnel(self, command: str) -> bool:
+        return command.strip().lower() in ("/tunnel", "tunnel", "tunnel status")
 
     def _match_reset(self, command: str) -> bool:
         return command.lower() in ("reset", "config reset", "/reset")
@@ -1312,6 +1382,17 @@ class CommandHandlers:
         return stripped.startswith("mkdir ") or stripped == "mkdir" or stripped.startswith("mkdir\t")
 
     # --- Handlers ---
+    async def handle_tunnel(self, command: str, state: dict):
+        """Display active Cloudflared tunnel and HF Space wake URLs."""
+        info = get_tunnel_info()
+        yield self._sse.text(
+            "🌐 **Ingress & Cloudflared Tunnel Status**\n\n"
+            f"* **Tunnel Mode:** `{info['mode']}`\n"
+            f"* **Cloudflared Public URL:** `{info['tunnel_url'] or 'Not active'}`\n"
+            f"* **HF Space Wake-on-Request URL:** `{info['hf_space_wake_url'] or 'Local/Non-HF Environment'}`\n"
+            f"* **Active Webhook Target:** `{info['webhook_endpoint'] or 'None'}`\n"
+        )
+        yield self._sse.done()
 
     async def handle_reset(self, command: str, state: dict):
         """Reset configuration and allow re-configuring."""
@@ -2914,6 +2995,10 @@ async def list_models():
         ]
     }
 
+@app.get("/v1/tunnel")
+async def tunnel_status():
+    """Returns active cloudflared tunnel URL and HF Space wake URL."""
+    return get_tunnel_info()
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
@@ -3312,5 +3397,12 @@ async def github_webhook(
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize system state on application startup."""
+    """
+    Initialize system state on application startup, sync webhook URL,
+    and automatically catch up on any PRs that woke the Space from sleep.
+    """
+    bootstrap_system()
+    asyncio.create_task(sync_github_webhook())
+    # Catch up on any open ocr-tasks-* PRs that triggered a cold wake-from-sleep
+    asyncio.create_task(trigger_ci_reviewer(0))
     bootstrap_system()

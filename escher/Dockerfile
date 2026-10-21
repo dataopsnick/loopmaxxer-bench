@@ -45,6 +45,10 @@ RUN apt-get update && apt-get install -y \
     && apt-get update && apt-get install -y mongodb-org-server \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Install cloudflared binary for outbound HTTP/2 tunnels (DDNS & Quick Tunnels)
+RUN curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared \
+    && chmod +x /usr/local/bin/cloudflared
+
 # Install pnpm globally
 RUN npm install -g pnpm
 

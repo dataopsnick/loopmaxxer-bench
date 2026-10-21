@@ -37,6 +37,33 @@ if [ -d ".deepsec" ]; then
 fi
 cd $HOME/app
 
+# 2.8 Start Cloudflared Tunnel (Named DDNS or Ephemeral Quick Tunnel over HTTP/2)
+if command -v cloudflared >/dev/null 2>&1; then
+  if [ -n "$CF_TUNNEL_TOKEN" ]; then
+    echo "🌐 Starting Persistent Cloudflare Named Tunnel (HTTP/2)..."
+    cloudflared tunnel --no-autoupdate --protocol http2 run --token "$CF_TUNNEL_TOKEN" --url http://127.0.0.1:7860 > /tmp/cloudflared.log 2>&1 &
+    if [ -n "$CF_PUBLIC_HOSTNAME" ]; then
+      export PUBLIC_INGRESS_URL="https://${CF_PUBLIC_HOSTNAME#https://}"
+      echo "$PUBLIC_INGRESS_URL" > $HOME/app/PUBLIC_URL.txt
+      echo "✅ Persistent Tunnel Hostname: $PUBLIC_INGRESS_URL"
+    fi
+  elif [ "${ENABLE_QUICK_TUNNEL:-true}" = "true" ]; then
+    echo "🌐 Starting Ephemeral Cloudflare Quick Tunnel (HTTP/2)..."
+    cloudflared tunnel --no-autoupdate --protocol http2 --url http://127.0.0.1:7860 > /tmp/cloudflared.log 2>&1 &
+    for i in {1..15}; do
+      TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log | head -n 1 || true)
+      if [ -n "$TUNNEL_URL" ]; then
+        export PUBLIC_INGRESS_URL="$TUNNEL_URL"
+        echo "$PUBLIC_INGRESS_URL" > $HOME/app/PUBLIC_URL.txt
+        echo "✅ Ephemeral Quick Tunnel Active: $PUBLIC_INGRESS_URL"
+        break
+      fi
+      echo "Waiting for Quick Tunnel URL..."
+      sleep 1
+    done
+  fi
+fi
+
 # 3. Start and verify Python Proxy
 echo "Starting Local CLI-to-OpenAI Proxy..."
 $HOME/venv/bin/python3 -m uvicorn proxy:app --host 127.0.0.1 --port 8080 &
@@ -205,5 +232,23 @@ gateway.listen(7860, '0.0.0.0', () => {
 });
 EOF
 
-echo "Starting Chat-UI on Port 7860..."
-node --dns-result-order=ipv4first run.js
+if [ -n "$HEADLESS_COMMAND" ]; then
+  echo "🤖 Starting Gateway in background for Headless CI execution..."
+  node --dns-result-order=ipv4first run.js &
+  sleep 2
+  echo "🚀 Executing Headless Command: $HEADLESS_COMMAND"
+  RESPONSE=$(curl -sN -X POST http://127.0.0.1:8080/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer sk-dummy-key" \
+    -d "{\"model\": \"${PREFERRED_MODEL:-project-blue-morpho}\", \"messages\": [{\"role\": \"user\", \"content\": \"$HEADLESS_COMMAND\"}]}")
+  echo "$RESPONSE"
+  if echo "$RESPONSE" | grep -q "❌"; then
+    echo "❌ Headless execution reported an error."
+    exit 1
+  fi
+  echo "✅ Headless execution completed successfully."
+  exit 0
+else
+  echo "Starting Chat-UI on Port 7860..."
+  node --dns-result-order=ipv4first run.js
+fi
