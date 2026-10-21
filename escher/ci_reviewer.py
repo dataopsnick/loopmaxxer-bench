@@ -246,7 +246,7 @@ async def run_automated_tests(branch_name):
     return syntax_passed and xml_passed
 
 async def run_alibaba_ocr_review(branch_name):
-    """Invokes Open Code Review to audit changes using z-ai/glm-5.2."""
+    """Invokes Open Code Review to audit changes using ~z-ai/glm-latest."""
     logging.info(f"Invoking Alibaba Open Code Review (comparing {BASE_BRANCH} -> {branch_name})...")
     
     # This runs the compiled OCR CLI, automatically capturing reviews to CODEREVIEW.md
@@ -276,7 +276,7 @@ async def submit_github_review(client: httpx.AsyncClient, pull_number, review_te
     
     body = (
         f"{status_msg}"
-        f"### Alibaba Open Code Review Auditing Feedback (GLM 5.2):\n"
+        f"### Alibaba Open Code Review Auditing Feedback (~z-ai/glm-latest):\n"
         f"```markdown\n"
         f"{review_text if review_text else '(No issues found by OCR review)'}\n"
         f"```"
@@ -349,7 +349,7 @@ async def main():
                 # 3. Compile and Run Automated Tests (enforcing the Gatekeeper rule)
                 tests_passed = await run_deterministic_gatekeeper_tests(head_branch) # await run_automated_tests(local_branch)
                 
-                # 4. Invoke Open Code Review (routes to z-ai/glm-5.2)
+                # 4. Invoke Open Code Review (routes to ~z-ai/glm-latest)
                 review_text = await run_alibaba_ocr_review(local_branch)
                 
                 # 5. Post findings

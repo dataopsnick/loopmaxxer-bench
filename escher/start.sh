@@ -60,19 +60,67 @@ OPENAI_BASE_URL=http://127.0.0.1:8080/v1
 OPENAI_API_KEY=sk-dummy-key
 MODELS='[
   {
-    "name": "DeepSeek v4 and GLM 5.2 Fusion",
-    "id": "deepseekv4glm5.2",
-    "description": "OpenRouter Fusion of deepseek-v4-flash, deepseek-v4-pro, z-ai/glm-5.2.",
-    "endpoints": [
-      {
-        "type": "openai",
-        "baseURL": "http://127.0.0.1:8080/v1"
-      }
-    ],
-    "parameters": {
-      "temperature": 0.1,
-      "max_new_tokens": 8192
-    }
+    "name": "Project Blue Morpho",
+    "id": "project-blue-morpho",
+    "description": "Escher Autonomous Loop Router (uses active wizard model or select a specific model below).",
+    "endpoints": [{"type": "openai", "baseURL": "http://127.0.0.1:8080/v1"}],
+    "parameters": {"temperature": 0.1, "max_new_tokens": 8192}
+  },
+  {
+    "name": "google/gemini-4-argon",
+    "id": "google/gemini-4-argon",
+    "description": "Google Gemini 4 Argon",
+    "endpoints": [{"type": "openai", "baseURL": "http://127.0.0.1:8080/v1"}],
+    "parameters": {"temperature": 0.1, "max_new_tokens": 8192}
+  },
+  {
+    "name": "~google/gemini-pro-latest",
+    "id": "~google/gemini-pro-latest",
+    "description": "Google Gemini Pro Latest",
+    "endpoints": [{"type": "openai", "baseURL": "http://127.0.0.1:8080/v1"}],
+    "parameters": {"temperature": 0.1, "max_new_tokens": 8192}
+  },
+  {
+    "name": "~google/gemini-flash-latest",
+    "id": "~google/gemini-flash-latest",
+    "description": "Google Gemini Flash Latest (Fast & cost-efficient)",
+    "endpoints": [{"type": "openai", "baseURL": "http://127.0.0.1:8080/v1"}],
+    "parameters": {"temperature": 0.1, "max_new_tokens": 8192}
+  },
+  {
+    "name": "~z-ai/glm-latest",
+    "id": "~z-ai/glm-latest",
+    "description": "Z-AI GLM Latest (High-performance reasoning)",
+    "endpoints": [{"type": "openai", "baseURL": "http://127.0.0.1:8080/v1"}],
+    "parameters": {"temperature": 0.1, "max_new_tokens": 8192}
+  },
+  {
+    "name": "~z-ai/glm-flash-latest",
+    "id": "~z-ai/glm-flash-latest",
+    "description": "Z-AI GLM Flash Latest (Fast & low-cost)",
+    "endpoints": [{"type": "openai", "baseURL": "http://127.0.0.1:8080/v1"}],
+    "parameters": {"temperature": 0.1, "max_new_tokens": 8192}
+  },
+  {
+    "name": "~deepseek/deepseek-pro-latest",
+    "id": "~deepseek/deepseek-pro-latest",
+    "description": "DeepSeek Pro Latest (Flagship reasoning)",
+    "endpoints": [{"type": "openai", "baseURL": "http://127.0.0.1:8080/v1"}],
+    "parameters": {"temperature": 0.1, "max_new_tokens": 8192}
+  },
+  {
+    "name": "~deepseek/deepseek-flash-latest",
+    "id": "~deepseek/deepseek-flash-latest",
+    "description": "DeepSeek Flash Latest (Fast & low-cost)",
+    "endpoints": [{"type": "openai", "baseURL": "http://127.0.0.1:8080/v1"}],
+    "parameters": {"temperature": 0.1, "max_new_tokens": 8192}
+  },
+  {
+    "name": "~moonshotai/kimi-latest",
+    "id": "~moonshotai/kimi-latest",
+    "description": "Moonshot AI Kimi Latest",
+    "endpoints": [{"type": "openai", "baseURL": "http://127.0.0.1:8080/v1"}],
+    "parameters": {"temperature": 0.1, "max_new_tokens": 8192}
   }
 ]'
 EOF

@@ -68,6 +68,18 @@ DEFAULT_STATE = {
 
 ALLOWED_BINARIES = {"git", "./ocr", "pnpm", "npx"}
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+DEFAULT_MODEL_ID = "project-blue-morpho"
+
+AVAILABLE_MODELS = [
+    "google/gemini-4-argon",
+    "~google/gemini-pro-latest",
+    "~google/gemini-flash-latest",
+    "~z-ai/glm-latest",
+    "~z-ai/glm-flash-latest",
+    "~deepseek/deepseek-pro-latest",
+    "~deepseek/deepseek-flash-latest",
+    "~moonshotai/kimi-latest",
+]
 
 # Concurrency locks (defined once — proxy.py had these duplicated)
 _state_lock = asyncio.Lock()
@@ -86,10 +98,11 @@ class SSEStream:
     testable helper that captures created_time at construction.
     """
 
-    MODEL_ID = "deepseekv4glm5.2"
+    MODEL_ID = DEFAULT_MODEL_ID
 
-    def __init__(self):
+    def __init__(self, model_id: str = DEFAULT_MODEL_ID):
         self.created_time = int(time.time())
+        self.MODEL_ID = model_id
 
     def text(self, text: str) -> str:
         """Create a text delta chunk."""
@@ -168,7 +181,7 @@ def load_state():
                 "api_key": "configured",
                 "github_token": init_data.get("github_token", "none"),
                 "whitelist": init_data.get("whitelist", ["novita", "google-ai-studio", "google-vertex"]),
-                "preferred_model": init_data.get("preferred_model", "deepseek/deepseek-v4-pro"),
+                "preferred_model": init_data.get("preferred_model", "~deepseek/deepseek-pro-latest"),
                 "alternative_model": init_data.get("alternative_model", "None"),
                 "zdr": init_data.get("zdr", False),
                 "data_collection": init_data.get("data_collection", "allow"),
@@ -368,7 +381,7 @@ def bootstrap_system():
         api_key = init_data.get("api_key")
         github_token = init_data.get("github_token", "none")
         whitelist = init_data.get("whitelist", ["novita", "google-ai-studio", "google-vertex"])
-        preferred_model = init_data.get("preferred_model", "deepseek/deepseek-v4-pro")
+        preferred_model = init_data.get("preferred_model", "~deepseek/deepseek-pro-latest")
         alternative_model = init_data.get("alternative_model", "None")
 
         zdr = init_data.get("zdr", False)
@@ -583,7 +596,7 @@ async def call_openrouter_llm(system_prompt, user_prompt, state):
     """Hits the direct OpenRouter completions endpoint adhering to setup restrictions and ZDR policies."""
     config_path = os.path.expanduser("~/.opencodereview/config.json")
     auth_token = ""
-    model = "deepseek/deepseek-v4-pro"
+    model = "~deepseek/deepseek-pro-latest"
     if os.path.exists(config_path):
         try:
             with open(config_path) as f:
@@ -825,7 +838,7 @@ class SetupWizard:
         yield self._sse.text(
             "🔑 **GitHub Token Configured!**\n\n"
             "To comply with your strict zero-data-retention (ZDR) policy, all OpenRouter calls are configured to deny data collection and disallow fallbacks. By default, only **`novita`** is whitelisted.\n\n"
-            "Would you like to manually add other providers or specific models (e.g. `azure`, `openai`, `anthropic`, `deepseek/deepseek-v4-pro`) to the `'only'` whitelist?\n\n"
+            "Would you like to manually add other providers or specific models (e.g. `azure`, `openai`, `anthropic`, `google`, `deepseek`) to the `'only'` whitelist?\n\n"
             "Enter a comma-separated list of additional providers/models, or type **none** to keep only `novita`:"
         )
         state["step"] = SetupStep.AWAIT_WHITELIST.value
@@ -903,10 +916,14 @@ class SetupWizard:
             f"* **Allow Fallbacks:** `{allow_fallbacks}`\n"
             f"* **Require Parameters:** `{require_parameters}`\n\n"
             "Next, select your preferred OpenRouter model (choose a number or type a custom model ID):\n\n"
-            "1. **z-ai/glm-5.2** (high-performance reasoning)\n"
-            "2. **deepseek/deepseek-v4-pro** (low-cost reasoning)\n"
-            "3. **google/gemini-3.5-flash** (cost-efficient general purpose)\n"
-            "4. **openrouter/fusion** (Balanced fusion)"
+            "1. **google/gemini-4-argon** (next-gen Gemini 4 Argon)\n"
+            "2. **~google/gemini-pro-latest** (flagship Gemini Pro general purpose)\n"
+            "3. **~google/gemini-flash-latest** (fast, cost-efficient Gemini Flash)\n"
+            "4. **~z-ai/glm-latest** (high-performance GLM reasoning)\n"
+            "5. **~z-ai/glm-flash-latest** (fast, low-cost GLM Flash)\n"
+            "6. **~deepseek/deepseek-pro-latest** (flagship DeepSeek Pro reasoning)\n"
+            "7. **~deepseek/deepseek-flash-latest** (fast, low-cost DeepSeek Flash)\n"
+            "8. **~moonshotai/kimi-latest** (flagship Moonshot Kimi)"
         )
         state["step"] = SetupStep.AWAIT_PREFERRED_MODEL.value
         await async_save_state(state)
@@ -915,21 +932,26 @@ class SetupWizard:
     async def _await_preferred_model(self, user_input: str, state: dict):
         """
         State: await_preferred_model — Process model selection, advance to alternative model.
-
-        Bug fix: proxy.py had swapped keyword checks (option 1 checked "pro",
-        option 2 checked "glm"). Now correctly maps menu labels to keywords.
         """
-        choice = user_input.lower()
-        if choice == "1" or "glm" in choice:
-            selected_model = "z-ai/glm-5.2"
-        elif choice == "2" or "pro" in choice:
-            selected_model = "deepseek/deepseek-v4-pro"
-        elif choice == "3" or "flash" in choice:
-            selected_model = "google/gemini-3.5-flash"
-        elif choice == "4" or "fusion" in choice:
-            selected_model = "openrouter/fusion"
+        choice = user_input.strip().lower()
+        if choice == "1" or "argon" in choice or "gemini-4" in choice:
+            selected_model = "google/gemini-4-argon"
+        elif choice == "2" or choice == "~google/gemini-pro-latest" or ("gemini" in choice and "pro" in choice):
+            selected_model = "~google/gemini-pro-latest"
+        elif choice == "3" or choice == "~google/gemini-flash-latest" or ("gemini" in choice and "flash" in choice):
+            selected_model = "~google/gemini-flash-latest"
+        elif choice == "4" or choice == "~z-ai/glm-latest" or ("glm" in choice and "flash" not in choice):
+            selected_model = "~z-ai/glm-latest"
+        elif choice == "5" or choice == "~z-ai/glm-flash-latest" or ("glm" in choice and "flash" in choice):
+            selected_model = "~z-ai/glm-flash-latest"
+        elif choice == "6" or choice == "~deepseek/deepseek-pro-latest" or ("deepseek" in choice and "pro" in choice):
+            selected_model = "~deepseek/deepseek-pro-latest"        
+        elif choice == "7" or choice == "~deepseek/deepseek-flash-latest" or ("deepseek" in choice and "flash" in choice):
+            selected_model = "~deepseek/deepseek-flash-latest"
+        elif choice == "8" or "kimi" in choice or "moonshot" in choice:
+            selected_model = "~moonshotai/kimi-latest"
         else:
-            selected_model = user_input
+            selected_model = user_input.strip()
 
         try:
             update_ocr_config(model=selected_model)
@@ -942,8 +964,11 @@ class SetupWizard:
         yield self._sse.text(
             f"⚙️ **Preferred Model Configured: `{selected_model}`**\n\n"
             "Next, select a **lower-cost alternative model** to use for smaller files/drafts (or to fall back on):\n\n"
-            "1. **deepseek/deepseek-v4-flash** (Fast & extremely cheap)\n"
-            "2. **No alternative** (Use the preferred model for everything)"
+            "1. **~google/gemini-flash-latest** (Fast & cost-efficient Gemini Flash)\n"
+            "2. **~z-ai/glm-flash-latest** (Fast & low-cost GLM Flash)\n"
+            "3. **~deepseek/deepseek-flash-latest** (Fast & extremely cheap DeepSeek Flash)\n"
+            "4. **~moonshotai/kimi-latest** (Moonshot Kimi Latest)\n"
+            "5. **No alternative** (Use the preferred model for everything)"
         )
         state["step"] = SetupStep.AWAIT_ALTERNATIVE_MODEL.value
         await async_save_state(state)
@@ -951,9 +976,19 @@ class SetupWizard:
 
     async def _await_alternative_model(self, user_input: str, state: dict):
         """State: await_alternative_model — Process alternative model, advance to loop engineer intro."""
-        choice = user_input.lower()
-        if choice == "1" or "flash" in choice:
-            alternative_model = "deepseek/deepseek-v4-flash"
+        choice = user_input.strip().lower()
+        if choice == "1" or "gemini" in choice or "google" in choice:
+            alternative_model = "~google/gemini-flash-latest"
+        elif choice == "2" or "glm" in choice or "z-ai" in choice:
+            alternative_model = "~z-ai/glm-flash-latest"
+        elif choice == "3" or "deepseek" in choice:
+            alternative_model = "~deepseek/deepseek-flash-latest"
+        elif choice == "4" or "kimi" in choice or "moonshot" in choice:
+            alternative_model = "~moonshotai/kimi-latest"
+        elif choice in ("5", "none", "no", "no alternative"):
+            alternative_model = "None"
+        elif choice.startswith("~") or "/" in choice:
+            alternative_model = user_input.strip()
         else:
             alternative_model = "None"
 
@@ -2869,15 +2904,13 @@ async def locked_generator(command_args: str):
 @app.get("/v1/models")
 async def list_models():
     """List available models (OpenAI-compatible endpoint)."""
+    now = int(time.time())
+    models = [DEFAULT_MODEL_ID] + AVAILABLE_MODELS
     return {
         "object": "list",
         "data": [
-            {
-                "id": "deepseekv4glm5.2",
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": "openrouter"
-            }
+            {"id": m, "object": "model", "created": now, "owned_by": "openrouter"}
+            for m in models
         ]
     }
 
@@ -3000,6 +3033,18 @@ async def chat_completions(request: Request):
     data = await request.json()
     messages = data.get("messages", [])
     last_message = messages[-1]["content"] if messages else "help"
+
+    # Sync preferred model if the user picked a specific model from the Chat-UI dropdown
+    requested_model = data.get("model")
+    if requested_model and requested_model != DEFAULT_MODEL_ID:
+        state = await async_load_state()
+        if state.get("preferred_model") != requested_model:
+            state["preferred_model"] = requested_model
+            await async_save_state(state)
+            try:
+                update_ocr_config(model=requested_model)
+            except Exception:
+                pass
 
     return StreamingResponse(locked_generator(last_message), media_type="text/event-stream")
 
