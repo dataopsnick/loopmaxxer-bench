@@ -41,13 +41,13 @@ cd $HOME/app
 if command -v cloudflared >/dev/null 2>&1; then
   if [ -n "$CF_TUNNEL_TOKEN" ]; then
     echo "🌐 Starting Persistent Cloudflare Named Tunnel (HTTP/2)..."
-    cloudflared tunnel --no-autoupdate --protocol http2 run --token "$CF_TUNNEL_TOKEN" --url http://127.0.0.1:7860 > /tmp/cloudflared.log 2>&1 &
+    cloudflared tunnel --no-autoupdate --protocol http2 run --token "$CF_TUNNEL_TOKEN" > /tmp/cloudflared.log 2>&1 &
     if [ -n "$CF_PUBLIC_HOSTNAME" ]; then
       export PUBLIC_INGRESS_URL="https://${CF_PUBLIC_HOSTNAME#https://}"
       echo "$PUBLIC_INGRESS_URL" > $HOME/app/PUBLIC_URL.txt
       echo "✅ Persistent Tunnel Hostname: $PUBLIC_INGRESS_URL"
     fi
-  elif [ "${ENABLE_QUICK_TUNNEL:-true}" = "true" ]; then
+  elif [ "${ENABLE_QUICK_TUNNEL:-false}" = "true" ]; then
     echo "🌐 Starting Ephemeral Cloudflare Quick Tunnel (HTTP/2)..."
     cloudflared tunnel --no-autoupdate --protocol http2 --url http://127.0.0.1:7860 > /tmp/cloudflared.log 2>&1 &
     for i in {1..15}; do
@@ -237,12 +237,27 @@ if [ -n "$HEADLESS_COMMAND" ]; then
   node --dns-result-order=ipv4first run.js &
   sleep 2
   echo "🚀 Executing Headless Command: $HEADLESS_COMMAND"
-  RESPONSE=$(curl -sN -X POST http://127.0.0.1:8080/v1/chat/completions \
+  rm -f /tmp/headless_stream.log
+  curl -sN -X POST http://127.0.0.1:8080/v1/chat/completions \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer sk-dummy-key" \
-    -d "{\"model\": \"${PREFERRED_MODEL:-project-blue-morpho}\", \"messages\": [{\"role\": \"user\", \"content\": \"$HEADLESS_COMMAND\"}]}")
-  echo "$RESPONSE"
-  if echo "$RESPONSE" | grep -q "❌"; then
+    -d "{\"model\": \"${PREFERRED_MODEL:-project-blue-morpho}\", \"stream\": true, \"messages\": [{\"role\": \"user\", \"content\": \"$HEADLESS_COMMAND\"}]}" \
+  | while IFS= read -r line; do
+      if [[ "$line" == "data: [DONE]"* ]]; then
+        break
+      elif [[ "$line" == data:* ]]; then
+        json_part="${line#data: }"
+        $HOME/venv/bin/python3 -c 'import sys, json
+try:
+    c = json.loads(sys.argv[1]).get("choices", [{}])[0].get("delta", {}).get("content", "")
+    sys.stdout.write(c)
+    sys.stdout.flush()
+except Exception:
+    pass' "$json_part" | tee -a /tmp/headless_stream.log
+      fi
+    done
+  echo ""
+  if grep -q "❌" /tmp/headless_stream.log 2>/dev/null; then
     echo "❌ Headless execution reported an error."
     exit 1
   fi

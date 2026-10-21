@@ -1,0 +1,29 @@
+{
+  "name": "Project Blue Morpho (Escher Autonomous Loop)",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "forwardPorts": [7860, 8080],
+  "portsAttributes": {
+    "7860": {
+      "label": "Project Blue Morpho Micro-Gateway (Chat-UI + Webhook)",
+      "onAutoForward": "openBrowser"
+    },
+    "8080": {
+      "label": "FastAPI CLI-to-OpenAI Proxy",
+      "onAutoForward": "silent"
+    }
+  },
+  "remoteEnv": {
+    "SPACE_ID": "tensorpros/project-blue-morpho",
+    "SPACE_HOST": "tensorpros-project-blue-morpho.hf.space",
+    "ESCHER_URL": "https://tensorpros-project-blue-morpho.hf.space",
+    "OCR_BOOTSTRAP_JSON": "${localEnv:OCR_BOOTSTRAP_JSON}",
+    "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}",
+    "HF_TOKEN": "${localEnv:HF_TOKEN}",
+    "CF_TUNNEL_TOKEN": "${localEnv:CF_TUNNEL_TOKEN}",
+    "ENABLE_QUICK_TUNNEL": "true"
+  },
+  "postStartCommand": "nohup ./start.sh > /tmp/blue-morpho.log 2>&1 &"
+}

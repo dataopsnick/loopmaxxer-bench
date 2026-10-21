@@ -430,11 +430,20 @@ def get_tunnel_info() -> dict:
     hf_url = f"https://{space_host}" if space_host else None
     mode = "named" if os.getenv("CF_TUNNEL_TOKEN") else ("quick_tunnel" if public_url else "disabled")
 
+    # Prevent "Webhook Suicide": Never overwrite a persistent HF Space wake URL
+    # with a temporary *.trycloudflare.com URL that dies when the Space sleeps.
+    if mode == "named" and public_url:
+        webhook_base = public_url
+    elif hf_url:
+        webhook_base = hf_url
+    else:
+        webhook_base = public_url
+
     return {
         "mode": mode,
         "tunnel_url": public_url or None,
         "hf_space_wake_url": hf_url,
-        "webhook_endpoint": f"{public_url or hf_url}/webhook" if (public_url or hf_url) else None,
+        "webhook_endpoint": f"{webhook_base}/webhook" if webhook_base else None,
     }
 
 

@@ -1,0 +1,67 @@
+name: Project Blue Morpho Autonomous Loop
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'CLI / Slash command to execute'
+        required: true
+        default: '/review-prs'
+      model:
+        description: 'Model override (or project-blue-morpho for default)'
+        required: true
+        default: 'project-blue-morpho'
+      execution_mode:
+        description: 'Execution target (remote-hf-space or local-container)'
+        required: true
+        default: 'remote-hf-space'
+        type: choice
+        options:
+          - remote-hf-space
+          - local-container
+  schedule:
+    # Runs up to 3 times per 24h window in compliance with AGENTS.md Budget Bound
+
+concurrency:
+  group: blue-morpho-autonomous-loop
+  cancel-in-progress: false
+
+env:
+  HF_SPACE_URL: https://tensorpros-project-blue-morpho.hf.space
+  HF_SPACE_ID: tensorpros/project-blue-morpho
+
+jobs:
+  trigger-blue-morpho:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Wake HF Space & Execute via Cloudflared / SSE (Remote Mode)
+        if: ${{ github.event.inputs.execution_mode != 'local-container' }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TARGET_CMD: ${{ github.event.inputs.command || '/review-prs' }}
+          TARGET_MODEL: ${{ github.event.inputs.model || 'project-blue-morpho' }}
+        run: |
+          chmod +x ./escher/test_headless.sh
+          ./escher/test_headless.sh "$HF_SPACE_URL" "$TARGET_CMD" "$TARGET_MODEL"
+
+      - name: Build & Execute Headlessly in Runner (Local Container Mode)
+        if: ${{ github.event.inputs.execution_mode == 'local-container' }}
+        env:
+          OCR_BOOTSTRAP_JSON: ${{ secrets.OCR_BOOTSTRAP_JSON }}
+          GITHUB_TOKEN: ${{ secrets.PAT_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
+          HEADLESS_COMMAND: ${{ github.event.inputs.command || '/review-prs' }}
+          PREFERRED_MODEL: ${{ github.event.inputs.model || 'project-blue-morpho' }}
+        run: |
+          docker build -t project-blue-morpho:ci ./escher
+          docker run --rm \
+            -e OCR_BOOTSTRAP_JSON \
+            -e GITHUB_TOKEN \
+            -e CF_TUNNEL_TOKEN \
+            -e HEADLESS_COMMAND \
+            -e PREFERRED_MODEL \
+            project-blue-morpho:ci
