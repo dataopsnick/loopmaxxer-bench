@@ -1,10 +1,11 @@
 # ----------------------------------------
-# Stage 1: Build Alibaba Open Code Review (Requires Go 1.25+)
+# Stage 1: Build Alibaba Open Code Review (Requires Go 1.26.9+)
 # ----------------------------------------
-FROM golang:1.23-alpine AS ocr-builder
+FROM golang:alpine AS ocr-builder
 WORKDIR /app
+ENV GOTOOLCHAIN=auto
 RUN apk add --no-cache make git
-RUN git clone https://github.com/alibaba/open-code-review.git . && git checkout v0.1.0
+RUN git clone https://github.com/alibaba/open-code-review.git .
 RUN make build
 
 # ----------------------------------------
