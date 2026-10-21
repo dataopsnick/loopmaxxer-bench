@@ -426,7 +426,7 @@ def get_tunnel_info() -> dict:
         except Exception:
             pass
 
-    space_host = os.getenv("SPACE_HOST", "")
+    space_host = os.getenv("SPACE_HOST", "tensorpros-project-blue-morpho.hf.space")
     hf_url = f"https://{space_host}" if space_host else None
     mode = "named" if os.getenv("CF_TUNNEL_TOKEN") else ("quick_tunnel" if public_url else "disabled")
 
@@ -1917,7 +1917,7 @@ Do not output conversational text or explanations outside the block.
             files_to_copy = [
                 "Dockerfile", "README.md", "ci_reviewer.py", "generate_tasklist.py",
                 "inspect_headers.py", "inspect_parts.py", "proxy.py", "start.sh",
-                "verify_pairs.py", "verify_xml.py"
+                "verify_pairs.py", "verify_xml.py", "Jenkinsfile", "test_headless.sh"
             ]
 
             copied_count = 0

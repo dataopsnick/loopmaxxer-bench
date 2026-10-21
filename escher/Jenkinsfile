@@ -1,0 +1,91 @@
+pipeline {
+    agent any
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds() // Enforces AGENTS.md single-execution concurrency lock
+        timestamps()
+    }
+
+    parameters {
+        choice(
+            name: 'EXECUTION_MODE',
+            choices: ['REMOTE_HF_SPACE', 'LOCAL_DOCKER_CONTAINER'],
+            description: 'Wake and trigger https://tensorpros-project-blue-morpho.hf.space or run locally in Docker'
+        )
+        string(
+            name: 'HEADLESS_COMMAND',
+            defaultValue: '/review-prs',
+            description: 'Escher slash/CLI command to run (e.g., /review-prs, /benchmark escher task main, /tunnel)'
+        )
+        choice(
+            name: 'PREFERRED_MODEL',
+            choices: [
+                'project-blue-morpho',
+                'google/gemini-4-argon',
+                '~google/gemini-pro-latest',
+                '~google/gemini-flash-latest',
+                '~z-ai/glm-latest',
+                '~z-ai/glm-flash-latest',
+                '~deepseek/deepseek-pro-latest',
+                '~deepseek/deepseek-flash-latest',
+                '~moonshotai/kimi-latest'
+            ],
+            description: 'Active LLM router target'
+        )
+    }
+
+    environment {
+        HF_SPACE_URL = 'https://tensorpros-project-blue-morpho.hf.space'
+        HF_SPACE_ID  = 'tensorpros/project-blue-morpho'
+    }
+
+    stages {
+        stage('Preflight Syntax & Static Check') {
+            steps {
+                dir('escher') {
+                    sh 'python3 -m py_compile proxy.py generate_tasklist.py ci_reviewer.py'
+                }
+            }
+        }
+
+        stage('Execute on Remote HF Space (Wake + Cloudflared)') {
+            when {
+                expression { params.EXECUTION_MODE == 'REMOTE_HF_SPACE' }
+            }
+            steps {
+                dir('escher') {
+                    sh '''
+                        chmod +x ./test_headless.sh
+                        ./test_headless.sh "${HF_SPACE_URL}" "${HEADLESS_COMMAND}" "${PREFERRED_MODEL}"
+                    '''
+                }
+            }
+        }
+
+        stage('Execute in Local Ephemeral Container') {
+            when {
+                expression { params.EXECUTION_MODE == 'LOCAL_DOCKER_CONTAINER' }
+            }
+            environment {
+                OCR_BOOTSTRAP_JSON = credentials('escher-ocr-bootstrap-json')
+                GITHUB_TOKEN       = credentials('escher-github-pat')
+                CF_TUNNEL_TOKEN    = credentials('escher-cloudflare-tunnel-token')
+            }
+            steps {
+                dir('escher') {
+                    sh '''
+                        docker build -t project-blue-morpho:${BUILD_NUMBER} .
+                        docker run --rm \
+                          -e OCR_BOOTSTRAP_JSON="$OCR_BOOTSTRAP_JSON" \
+                          -e GITHUB_TOKEN="$GITHUB_TOKEN" \
+                          -e CF_TUNNEL_TOKEN="$CF_TUNNEL_TOKEN" \
+                          -e HEADLESS_COMMAND="${HEADLESS_COMMAND}" \
+                          -e PREFERRED_MODEL="${PREFERRED_MODEL}" \
+                          project-blue-morpho:${BUILD_NUMBER}
+                    '''
+                }
+            }
+        }
+    }
+}
