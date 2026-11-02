@@ -1,0 +1,17 @@
+// .devcontainer/devcontainer.json
+{
+  "name": "Market Making Cloud Sandbox",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "workspace",
+  "workspaceFolder": "/workspace",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates"
+      ]
+    }
+  },
+  "postCreateCommand": "rustc --version && cargo --version"
+}
